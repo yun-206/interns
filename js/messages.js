@@ -79,12 +79,25 @@ window.Hub.boot(function () {
       head = `<span class="av-wrap">${H.avatar(current, 'av--lg')}<i class="st st--${st} st--badge" aria-hidden="true"></i></span><span class="dm__who"><b>${esc(m.name)}</b><small>${m.role ? esc(m.role) + ' · ' : ''}${ST[st]}</small></span>`;
     }
     const nm = isGroup ? '단체방' : H.member(current).name + ' 님';
+    const msgsHtml = body || `<p class="dm__first">${isGroup ? '다 같이 보는 방이에요. 첫 쪽지를 남겨 보세요 👋 사진·파일은 끌어다 놓아도 돼요' : esc(nm) + '에게 첫 쪽지를 보내 보세요 👋'}</p>`;
+    // 같은 대화를 다시 그릴 땐 말풍선·머리만 바꾸고 입력창은 그대로 둠
+    // (입력창을 새로 만들면 한글 조합 중이던 글자가 끊겨 'ㅇㅏㄴㅣ'처럼 자모가 풀려 버림)
+    if (same && $('#dmForm') && scroller) {
+      $('.dm__head', box).innerHTML = `<button class="icon-btn dm__back" type="button" id="dmBack" aria-label="대화 목록으로">${icon('back', 20)}</button>${head}`;
+      $('#dmBack').onclick = () => open(null);
+      const top = scroller.scrollTop;
+      scroller.innerHTML = msgsHtml;
+      scroller.scrollTop = nearBottom ? scroller.scrollHeight : top;
+      fillUrls();
+      markRead();
+      return;
+    }
     box.innerHTML = `
       <header class="dm__head">
         <button class="icon-btn dm__back" type="button" id="dmBack" aria-label="대화 목록으로">${icon('back', 20)}</button>
         ${head}
       </header>
-      <div class="dm__msgs" id="dmMsgs" tabindex="0" aria-label="${esc(nm)} 쪽지">${body || `<p class="dm__first">${isGroup ? '다 같이 보는 방이에요. 첫 쪽지를 남겨 보세요 👋 사진·파일은 끌어다 놓아도 돼요' : esc(nm) + '에게 첫 쪽지를 보내 보세요 👋'}</p>`}</div>
+      <div class="dm__msgs" id="dmMsgs" tabindex="0" aria-label="${esc(nm)} 쪽지">${msgsHtml}</div>
       <div class="tray" id="tray" hidden></div>
       <form class="dm__form" id="dmForm">
         <button class="icon-btn dm__attach" type="button" id="dmAttach" aria-label="사진·파일 첨부" title="사진·파일 첨부 (끌어다 놓기·붙여넣기도 돼요)">${icon('clip', 20)}</button>
