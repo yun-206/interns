@@ -47,6 +47,34 @@ create table if not exists public.messages (
 );
 create index if not exists messages_pair_idx on public.messages (sender, recipient, created_at);
 
+-- 첨부(사진·파일): 파일 자체는 Storage 'chat-files' 버킷, 여기엔 경로·이름·종류·크기만
+alter table public.messages add column if not exists file_path text;
+alter table public.messages add column if not exists file_name text check (char_length(file_name) <= 120);
+alter table public.messages add column if not exists file_type text check (char_length(file_type) <= 100);
+alter table public.messages add column if not exists file_size int  check (file_size between 0 and 10485760);
+do $$
+declare c record;
+begin
+  -- 예전 '본문 1~500자' 규칙을 '본문 또는 첨부 중 하나는 있어야 함'으로 교체
+  for c in select conname from pg_constraint
+    where conrelid = 'public.messages'::regclass and contype = 'c' and pg_get_constraintdef(oid) like '%char_length(body)%'
+  loop
+    execute format('alter table public.messages drop constraint %I', c.conname);
+  end loop;
+  alter table public.messages add constraint messages_body_or_file
+    check (char_length(body) <= 500 and (char_length(body) >= 1 or file_path is not null));
+end $$;
+
+-- 쪽지 첨부가 들어갈 폴더: 단체방은 'group', 1:1은 두 사람 id를 정렬해 '_'로 이은 이름
+create or replace function public.chat_scope(p_sender uuid, p_recipient uuid)
+returns text
+language sql
+immutable
+as $$
+  select case when p_recipient is null then 'group'
+              else least(p_sender::text, p_recipient::text) || '_' || greatest(p_sender::text, p_recipient::text) end;
+$$;
+
 -- 단체방을 어디까지 읽었는지 (팀원마다 한 줄)
 create table if not exists public.chat_reads (
   member   uuid primary key references public.members(id) on delete cascade,
@@ -128,7 +156,9 @@ create policy "notices delete"    on public.notices     for delete to authentica
 -- 단체방은 모두, 1:1은 보낸 사람·받은 사람만
 create policy "messages read"     on public.messages    for select to authenticated using (
   public.my_member_id() is not null and (recipient is null or sender = public.my_member_id() or recipient = public.my_member_id()));
-create policy "messages insert"   on public.messages    for insert to authenticated with check (sender = public.my_member_id() and read_at is null);
+create policy "messages insert"   on public.messages    for insert to authenticated with check (
+  sender = public.my_member_id() and read_at is null
+  and (file_path is null or split_part(file_path, '/', 1) = public.chat_scope(sender, recipient)));
 create policy "messages read-mark" on public.messages   for update to authenticated using (recipient = public.my_member_id()) with check (recipient = public.my_member_id());
 
 create policy "chat_reads read"   on public.chat_reads  for select to authenticated using (public.my_member_id() is not null);
@@ -257,6 +287,11 @@ begin
   if not public.check_password(p_password) then
     raise exception 'wrong_password' using errcode = '28P01';
   end if;
+  -- 첨부 파일 (Storage가 SQL 삭제를 막는 프로젝트면 건너뜀 → 대시보드 Storage에서 chat-files 비우기)
+  begin
+    delete from storage.objects where bucket_id = 'chat-files';
+  exception when others then null;
+  end;
   delete from public.lunch_picks    where true;
   delete from public.schedules      where true;
   delete from public.chat_reads     where true;
@@ -283,7 +318,35 @@ grant execute on function public.join_team(text, text, text) to authenticated;
 grant execute on function public.leave_device()              to authenticated;
 grant execute on function public.reset_all(text)             to authenticated;
 
--- 5) 실시간: 표가 바뀌면 열려 있는 화면에 알림 (RLS에 맞게 각자 볼 수 있는 것만) ----
+-- 5) 첨부 파일 저장소 (비공개 버킷, 파일당 10MB) ------------------
+insert into storage.buckets (id, name, public, file_size_limit)
+values ('chat-files', 'chat-files', false, 10485760)
+on conflict (id) do update set public = false, file_size_limit = excluded.file_size_limit;
+
+-- 이 파일 경로를 지금 기기가 볼 수 있나: 단체방 폴더는 멤버 모두, 1:1 폴더는 두 사람만
+create or replace function public.can_access_chat_path(p_name text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select public.my_member_id() is not null and (
+    split_part(p_name, '/', 1) = 'group'
+    or public.my_member_id()::text = any(string_to_array(split_part(p_name, '/', 1), '_'))
+  );
+$$;
+revoke all on function public.can_access_chat_path(text) from public;
+grant execute on function public.can_access_chat_path(text) to authenticated;
+
+drop policy if exists "chat files read"   on storage.objects;
+drop policy if exists "chat files upload" on storage.objects;
+create policy "chat files read"   on storage.objects for select to authenticated
+  using (bucket_id = 'chat-files' and public.can_access_chat_path(name));
+create policy "chat files upload" on storage.objects for insert to authenticated
+  with check (bucket_id = 'chat-files' and public.can_access_chat_path(name));
+
+-- 6) 실시간: 표가 바뀌면 열려 있는 화면에 알림 (RLS에 맞게 각자 볼 수 있는 것만) ----
 do $$
 declare t text;
 begin

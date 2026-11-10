@@ -53,6 +53,10 @@
     wheel: '<circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17M3.5 12h17M6 6l12 12M18 6L6 18"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/>',
     dice: '<rect x="4" y="4" width="16" height="16" rx="4"/><circle cx="9" cy="9" r="1.2" fill="currentColor"/><circle cx="15" cy="15" r="1.2" fill="currentColor"/><circle cx="15" cy="9" r="1.2" fill="currentColor"/><circle cx="9" cy="15" r="1.2" fill="currentColor"/>',
     group: '<circle cx="8" cy="9" r="3"/><circle cx="16" cy="9" r="3"/><path d="M2.5 19c.5-3 2.7-4.8 5.5-4.8s5 1.8 5.5 4.8M13.5 15.2c.8-.6 1.6-1 2.5-1 2.8 0 5 1.8 5.5 4.8"/>',
+    clip: '<path d="M20 11.5l-7.8 7.8a5 5 0 0 1-7.1-7.1l8.2-8.2a3.4 3.4 0 0 1 4.8 4.8l-8.2 8.2a1.7 1.7 0 0 1-2.4-2.4l7.5-7.5"/>',
+    image: '<rect x="3.5" y="4.5" width="17" height="15" rx="3"/><circle cx="9" cy="10" r="1.8"/><path d="M20.5 16l-5-5-8.5 8.5"/>',
+    file: '<path d="M7 3.5h7l4.5 4.5v12.5H7z"/><path d="M14 3.5V8h4.5"/>',
+    download: '<path d="M12 4v11M7 10.5l5 5 5-5M5 19.5h14"/>',
     plane: '<path d="M3 13.5l7-1.5 4.5-7.5a1.6 1.6 0 0 1 2.8 1.6L15.5 13l4 1.5.9 2.5-5.4-.6-2.7 4.1-2 .3.7-4.9-5-1.1z"/>',
   };
   const icon = (name, size) => `<svg class="ic" viewBox="0 0 24 24" width="${size || 20}" height="${size || 20}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[name] || P.link}</svg>`;
@@ -147,7 +151,16 @@
     async addActivity(a) { state.activity = [a].concat(state.activity).slice(0, 30); store.set(K.activity, state.activity); },
     async addNotice(n) { const item = Object.assign({ id: newId('n'), at: Date.now() }, n); state.notices = [item].concat(state.notices); store.set(K.notices, state.notices); return item; },
     async removeNotice(id) { state.notices = state.notices.filter(n => n.id !== id); store.set(K.notices, state.notices); },
-    async sendMessage(m) { const item = Object.assign({ id: newId('d'), at: Date.now(), readAt: null }, m); state.messages = state.messages.concat(item); store.set(K.messages, state.messages); return item; },
+    async sendMessage(m) {
+      const item = Object.assign({ id: newId('d'), at: Date.now(), readAt: null }, m);
+      state.messages = state.messages.concat(item);
+      try { localStorage.setItem(K.messages, JSON.stringify(state.messages)); }
+      catch (e) { state.messages = state.messages.filter(x => x !== item); throw new Error('local_full'); }   // 미리보기 모드는 브라우저 저장 공간(약 5MB)이 한계
+      return item;
+    },
+    async uploadFile(path, blob) { return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(r.error); r.readAsDataURL(blob); }); },   // 로컬은 data URL 자체를 '경로'로
+    async signUrls(paths) { const o = {}; paths.forEach(p => { o[p] = p; }); return o; },
+    async downloadUrl(path) { return path; },
     async markRead(me, other) {
       if (other === 'group') { state.reads[me] = Date.now(); store.set(K.reads, state.reads); return; }
       let changed = false;
@@ -190,9 +203,11 @@
 
   /* ---------- Supabase 백엔드 ---------- */
   let sb = null, channel = null;
+  const BUCKET = 'chat-files';
   const fromMember = (r) => ({ id: r.id, name: r.name, role: r.role || '', joinedAt: Date.parse(r.joined_at) || 0 });
   const fromNotice = (r) => ({ id: r.id, tag: r.tag, title: r.title, body: r.body || '', author: r.author, at: Date.parse(r.created_at) || 0 });
-  const fromMessage = (r) => ({ id: r.id, from: r.sender, to: r.recipient || null, body: r.body, at: Date.parse(r.created_at) || 0, readAt: r.read_at ? Date.parse(r.read_at) : null });
+  const fromMessage = (r) => ({ id: r.id, from: r.sender, to: r.recipient || null, body: r.body || '', at: Date.parse(r.created_at) || 0, readAt: r.read_at ? Date.parse(r.read_at) : null,
+    file: r.file_path ? { path: r.file_path, name: r.file_name || '파일', type: r.file_type || '', size: r.file_size || 0 } : null });
   const fromActivity = (r) => ({ who: r.who, what: r.what, where: r.place || '', at: Date.parse(r.at) || 0 });
   const fromSchedule = (r) => ({ id: r.id, member: r.member, kind: r.kind, start: r.start_date, end: r.end_date, memo: r.memo || '', at: Date.parse(r.created_at) || 0 });
   const fromLunch = (r) => ({ id: r.id, by: r.picked_by, mode: r.mode, candidates: r.candidates || [], result: r.result, at: Date.parse(r.created_at) || 0 });
@@ -241,10 +256,24 @@
     },
     async removeNotice(id) { check(await sb.from('notices').delete().eq('id', id)); state.notices = state.notices.filter(n => n.id !== id); },
     async sendMessage(m) {
-      const item = fromMessage(check(await sb.from('messages').insert({ sender: m.from, recipient: m.to || null, body: m.body }).select().single()));
+      const row = { sender: m.from, recipient: m.to || null, body: m.body || '' };
+      if (m.file) Object.assign(row, { file_path: m.file.path, file_name: m.file.name, file_type: m.file.type, file_size: m.file.size });
+      const item = fromMessage(check(await sb.from('messages').insert(row).select().single()));
       if (!state.messages.some(x => x.id === item.id)) state.messages = state.messages.concat(item);
       return item;
     },
+    // 첨부: 비공개 버킷에 올리고, 볼 때는 1시간짜리 서명 URL
+    async uploadFile(path, blob, type) {
+      const r = await sb.storage.from(BUCKET).upload(path, blob, { contentType: type || 'application/octet-stream', upsert: false });
+      if (r.error) throw r.error;
+      return path;
+    },
+    async signUrls(paths) {
+      const r = await sb.storage.from(BUCKET).createSignedUrls(paths, 3600);
+      if (r.error) throw r.error;
+      const out = {}; (r.data || []).forEach(x => { if (x.signedUrl) out[x.path] = x.signedUrl; }); return out;
+    },
+    async downloadUrl(path, name) { const r = await sb.storage.from(BUCKET).createSignedUrl(path, 3600, { download: name || true }); if (r.error) throw r.error; return r.data.signedUrl; },
     async markRead(me, other) {
       if (other === 'group') {
         check(await sb.from('chat_reads').upsert({ member: me, read_at: new Date().toISOString() }, { onConflict: 'member' }));
@@ -391,7 +420,33 @@
       if (msg.to) return msg.readAt ? 0 : 1;
       return state.members.filter(m => m.id !== msg.from && m.joinedAt <= msg.at && this.groupReadAt(m.id) < msg.at).length;
     },
-    async send(to, body) { return backend.sendMessage({ from: team.meId(), to: to === 'group' ? null : to, body }); },
+    async send(to, body, file) {
+      const me = team.meId();
+      let f = null;
+      if (file) {
+        const ext = (String(file.name).match(/\.([a-z0-9]{1,8})$/i) || [, 'bin'])[1].toLowerCase();
+        const path = `${this.scope(to)}/${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+        const saved = await backend.uploadFile(path, file.blob, file.type);
+        f = { path: saved, name: String(file.name).slice(0, 120), type: (file.type || '').slice(0, 100), size: file.size };
+      }
+      return backend.sendMessage({ from: me, to: to === 'group' ? null : to, body: body || '', file: f });
+    },
+    // 첨부 폴더: 단체방 'group', 1:1은 두 사람 id 정렬 (DB 보안 규칙과 같은 규칙)
+    scope(to) { if (to === 'group' || !to) return 'group'; return [team.meId(), to].sort().join('_'); },
+    isImage(f) { return !!f && /^image\/(jpeg|png|gif|webp|bmp|avif)$/i.test(f.type || ''); },
+    preview(m) { if (m.body) return m.body; if (!m.file) return ''; return this.isImage(m.file) ? '📷 사진' : `📎 ${m.file.name}`; },
+    // 서명 URL 캐시 (만료 5분 전까지 재사용)
+    _urls: {},
+    cachedUrl(path) { const c = this._urls[path]; return c && c.exp > Date.now() ? c.url : null; },
+    async urls(paths) {
+      const need = [...new Set(paths)].filter(p => !this.cachedUrl(p));
+      if (need.length) {
+        const got = await backend.signUrls(need), exp = Date.now() + 55 * 60 * 1000;
+        Object.keys(got).forEach(p => { this._urls[p] = { url: got[p], exp }; });
+      }
+      const out = {}; paths.forEach(p => { const u = this.cachedUrl(p); if (u) out[p] = u; }); return out;
+    },
+    downloadUrl(f) { return backend.downloadUrl(f.path, f.name); },
     async markRead(other) { try { await backend.markRead(team.meId(), other); } catch (e) { console.warn(e); } },
   };
   const KINDS = TEAM.scheduleKinds.length ? TEAM.scheduleKinds : ['연차', '오전 반차', '오후 반차', '출장', '외근', '교육', '재택', '기타'];
@@ -431,8 +486,8 @@
       const gRead = messages.groupReadAt(me);
       const out = [];
       state.notices.filter(n => n.author !== me).forEach(n => out.push({ id: 'n:' + n.id, kind: 'notice', who: n.author, at: n.at, text: `${nm(n.author)} 님이 공지를 올렸어요`, sub: n.title, href: 'notices.html#n-' + n.id }));
-      state.messages.filter(m => m.to === me).forEach(m => out.push({ id: 'd:' + m.id, kind: 'message', who: m.from, at: m.at, read: !!m.readAt, text: `${nm(m.from)} 님의 쪽지`, sub: m.body, href: 'messages.html?to=' + encodeURIComponent(m.from) }));
-      state.messages.filter(m => !m.to && m.from !== me).forEach(m => out.push({ id: 'g:' + m.id, kind: 'message', who: m.from, at: m.at, read: m.at <= gRead, text: `단체방 · ${nm(m.from)}`, sub: m.body, href: 'messages.html?to=group' }));
+      state.messages.filter(m => m.to === me).forEach(m => out.push({ id: 'd:' + m.id, kind: 'message', who: m.from, at: m.at, read: !!m.readAt, text: `${nm(m.from)} 님의 쪽지`, sub: messages.preview(m), href: 'messages.html?to=' + encodeURIComponent(m.from) }));
+      state.messages.filter(m => !m.to && m.from !== me).forEach(m => out.push({ id: 'g:' + m.id, kind: 'message', who: m.from, at: m.at, read: m.at <= gRead, text: `단체방 · ${nm(m.from)}`, sub: messages.preview(m), href: 'messages.html?to=group' }));
       state.schedules.filter(s => s.member !== me && s.at).forEach(s => out.push({ id: 's:' + s.id, kind: 'schedule', who: s.member, at: s.at, text: `${nm(s.member)} 님이 일정을 올렸어요`, sub: `${rangeLabel(s.start, s.end)} ${s.kind}${s.memo ? ' · ' + s.memo : ''}`, href: 'schedule.html?date=' + s.start }));
       state.lunch.filter(l => l.by !== me).forEach(l => out.push({ id: 'l:' + l.id, kind: 'lunch', who: l.by, at: l.at, text: `${nm(l.by)} 님이 점심을 뽑았어요`, sub: `🍚 ${l.candidates[l.result]} (후보 ${l.candidates.length}개)`, href: 'lunch.html' }));
       return out.sort(byAtDesc).slice(0, 30);

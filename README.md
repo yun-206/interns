@@ -8,7 +8,7 @@
 |---|---|
 | `/` | 홈: 인사·요약(오늘 일정 있는 사람 / 안 읽은 쪽지 / 접속 중), 이번 주 일정, 오늘 점심, 공지, 최근 활동, 멤버 |
 | `/join.html` | 입장: 비밀번호 → 이름·소속(선택). 초대 링크는 `/join.html?invite=1` |
-| `/messages.html` | 쪽지: **단체방** + 멤버별 1:1. 말풍선 옆 노란 숫자 = 아직 안 읽은 사람 수 |
+| `/messages.html` | 쪽지: **단체방** + 멤버별 1:1. 말풍선 옆 노란 숫자 = 아직 안 읽은 사람 수. **사진·파일 첨부**(📎 버튼 / 끌어다 놓기 / Ctrl+V 붙여넣기) |
 | `/schedule.html` | 일정 공유: 월간 달력. 연차·오전/오후 반차·출장·외근·교육·재택·기타, 여러 날 가능 |
 | `/lunch.html` | 점심 뽑기: 후보 1~4개 → 돌림판 / 랜덤 뽑기. 결과는 다른 멤버 화면에서도 같은 애니메이션으로 재생 |
 | `/notices.html` | 공지사항: 공지·약속·정보 |
@@ -17,10 +17,20 @@
 - 멤버 목록에 접속 상태와 **오늘 연차·출장** 같은 표시가 같이 떠요
 - 한 번 들어온 기기는 다음부터 바로 열려요. 다른 기기에선 같은 이름으로 들어오면 기존 멤버로 이어져요
 
+## 첨부 (사진·파일)
+- 1:1·단체방 모두 가능. 📎 버튼으로 고르거나, 탐색기에서 대화창으로 **끌어다 놓거나**, 캡처한 사진을 **Ctrl+V**로 붙여넣기
+- 한 번에 10개, 파일당 10MB까지. 큰 사진은 보내기 전에 긴 변 1920px JPEG로 줄여요(GIF는 그대로)
+- html·js·exe 같은 실행 파일은 막아요
+- 사진은 말풍선에 바로 보이고, 누르면 크게 보기(← → 로 넘기기, 저장). 그 밖의 파일은 눌러서 받기
+- 파일은 Supabase Storage의 **비공개** 버킷 `chat-files`에 저장. 링크는 1시간짜리 서명 URL이라 밖으로 새도 곧 만료돼요
+- 폴더 규칙: 단체방 `group/…`, 1:1 `두 사람 id 정렬_…/` → **1:1 파일은 두 사람만** 받을 수 있어요(Storage RLS)
+- 전체 초기화하면 첨부 파일도 같이 지워져요
+- 무료 플랜 Storage 1GB면 이 정도 용도엔 충분해요
+
 ## 처음 설정 (Supabase)
 1. supabase.com에서 프로젝트 만들기 (Region: Northeast Asia (Seoul))
 2. **Authentication → Sign In / Providers → Allow anonymous sign-ins 켜기** (기기 인증에 써요)
-3. **SQL Editor**에 `supabase/setup.sql` 통째로 붙여넣고 Run (여러 번 실행해도 안전)
+3. **SQL Editor**에 `supabase/setup.sql` 통째로 붙여넣고 Run (여러 번 실행해도 안전 · 첨부용 Storage 버킷과 규칙도 여기서 같이 만들어져요)
 4. **비밀번호 정하기** — SQL Editor에서 아래 한 줄을 따로 Run (이 줄은 저장소에 올리지 않아요)
    ```sql
    insert into public.app_settings (key, value) values ('password', '여기에_비밀번호') on conflict (key) do update set value = excluded.value;
@@ -45,8 +55,8 @@
 | `js/hub-core.js` | 공통: 상단바·사이드바·알림 패널, 데이터 층(로컬/Supabase), 접속 상태, 초대·공지·일정 모달 |
 | `js/home.js` · `join.js` · `messages.js` · `schedule.js` · `lunch.js` · `notices.js` | 화면별 코드 |
 | `data/team.js` | 이름, Supabase 주소·키, 일정 종류, 점심 빠른 추가 후보, 바로가기 |
-| `supabase/setup.sql` | 표·RLS·함수·Realtime |
+| `supabase/setup.sql` | 표·RLS·함수·Realtime·첨부 Storage 버킷과 규칙 |
 | `css/hub.css` | 스타일 (팀 허브와 같은 토큰) |
 
 ## 미리보기 모드
-`data/team.js`의 `supabase` 값을 비우고 `password`를 넣으면 이 브라우저 안에서만 돌아가는 미리보기 모드가 돼요(같은 브라우저 탭끼리만 공유).
+`data/team.js`의 `supabase` 값을 비우고 `password`를 넣으면 이 브라우저 안에서만 돌아가는 미리보기 모드가 돼요(같은 브라우저 탭끼리만 공유). 미리보기 모드의 첨부는 브라우저 저장 공간이 작아서 1MB까지만 돼요.
