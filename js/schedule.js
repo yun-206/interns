@@ -12,9 +12,14 @@ window.Hub.boot(function () {
   let flashDay = focusDate, flashId = null;
 
   // 범례
-  const shown = [];
-  schedules.KINDS.forEach(k => { const c = schedules.kindClass(k); if (!shown.some(x => x[1] === c)) shown.push([k.replace(/^오[전후] /, ''), c]); });
-  $('#legend').innerHTML = shown.map(([k, c]) => `<span class="lgk"><i class="lgk__dot chip--${c}"></i>${esc(k)}</span>`).join('');
+  function legend() {
+    const shown = [];
+    schedules.BASE_KINDS.forEach(k => { const c = schedules.kindClass(k); if (!shown.some(x => x[1] === c)) shown.push([k.replace(/^오[전후] /, ''), c]); });
+    schedules.custom().forEach(x => shown.push([x.name, x.color]));   // 직접 만든 종류는 이름마다 따로
+    $('#legend').innerHTML = shown.map(([k, c]) => `<span class="lgk"><i class="lgk__dot chip--${c}"></i>${esc(k)}</span>`).join('');
+  }
+  legend();
+  document.addEventListener('hub:schedules', legend);
 
   const chip = (s, small) => `<button type="button" class="chip chip--${schedules.kindClass(s.kind)}${s.member === team.meId() ? ' is-mine' : ''}${s.id === flashId ? ' is-new' : ''}" data-sid="${esc(s.id)}" title="${esc(H.member(s.member).name)} ${esc(s.kind)}${s.memo ? ' · ' + esc(s.memo) : ''}">${small ? '' : H.avatar(s.member)}<b>${esc(H.shortName(H.member(s.member).name))}</b><span>${esc(s.kind)}</span></button>`;
 

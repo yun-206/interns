@@ -84,13 +84,33 @@ create table if not exists public.chat_reads (
 create table if not exists public.schedules (
   id          uuid primary key default gen_random_uuid(),
   member      uuid not null references public.members(id) on delete cascade,
-  kind        text not null check (kind in ('연차', '오전 반차', '오후 반차', '출장', '외근', '교육', '재택', '기타')),
+  kind        text not null check (char_length(kind) between 1 and 10),
   start_date  date not null,
   end_date    date not null,
   memo        text not null default '' check (char_length(memo) <= 40),
   created_at  timestamptz not null default now(),
   check (end_date >= start_date and end_date - start_date <= 30)
 );
+
+-- 멤버가 직접 만든 일정 종류 (기본 8종 말고). 만든 사람만 지울 수 있고, 지워도 이미 올린 일정의 글자는 그대로
+create table if not exists public.schedule_kinds (
+  name        text primary key check (char_length(name) between 1 and 10 and name = btrim(name)),
+  color       text not null check (color in ('off', 'half', 'trip', 'edu', 'home', 'etc', 'pink', 'green', 'red', 'blue')),
+  created_by  uuid references public.members(id) on delete cascade,
+  created_at  timestamptz not null default now()
+);
+
+-- v1/v2에서 올라온 경우: 일정 종류를 정해진 8개에서 자유 글자(1~10자)로 바꿈
+do $$
+declare r record;
+begin
+  for r in select conname from pg_constraint
+    where conrelid = 'public.schedules'::regclass and contype = 'c' and pg_get_constraintdef(oid) like '%kind%'
+  loop
+    execute format('alter table public.schedules drop constraint %I', r.conname);
+  end loop;
+  alter table public.schedules add constraint schedules_kind_len check (char_length(kind) between 1 and 10);
+end $$;
 
 create table if not exists public.lunch_picks (
   id          uuid primary key default gen_random_uuid(),
@@ -134,6 +154,7 @@ alter table public.messages       enable row level security;
 alter table public.chat_reads     enable row level security;
 alter table public.schedules      enable row level security;
 alter table public.lunch_picks    enable row level security;
+alter table public.schedule_kinds enable row level security;
 alter table public.activity       enable row level security;
 alter table public.app_settings   enable row level security;
 
@@ -141,7 +162,7 @@ do $$
 declare r record;
 begin
   for r in select policyname, tablename from pg_policies where schemaname = 'public'
-    and tablename in ('members','member_devices','notices','messages','chat_reads','schedules','lunch_picks','activity','app_settings')
+    and tablename in ('members','member_devices','notices','messages','chat_reads','schedules','schedule_kinds','lunch_picks','activity','app_settings')
   loop
     execute format('drop policy %I on public.%I', r.policyname, r.tablename);
   end loop;
@@ -169,6 +190,11 @@ create policy "schedules read"    on public.schedules   for select to authentica
 create policy "schedules insert"  on public.schedules   for insert to authenticated with check (member = public.my_member_id());
 create policy "schedules delete"  on public.schedules   for delete to authenticated using (member = public.my_member_id());
 
+create policy "kinds read"        on public.schedule_kinds for select to authenticated using (public.my_member_id() is not null);
+create policy "kinds insert"      on public.schedule_kinds for insert to authenticated with check (
+  created_by = public.my_member_id() and (select count(*) from public.schedule_kinds) < 30);   -- 너무 많아지지 않게 30개까지
+create policy "kinds delete"      on public.schedule_kinds for delete to authenticated using (created_by = public.my_member_id());
+
 create policy "lunch read"        on public.lunch_picks for select to authenticated using (public.my_member_id() is not null);
 create policy "lunch insert"      on public.lunch_picks for insert to authenticated with check (picked_by = public.my_member_id());
 
@@ -186,6 +212,7 @@ grant update (read_at) on public.messages to authenticated;      -- 읽음 표�
 grant select, insert, update on public.chat_reads to authenticated;
 grant select, insert, delete on public.schedules to authenticated;
 grant select, insert on public.lunch_picks to authenticated;
+grant select, insert, delete on public.schedule_kinds to authenticated;
 grant select, insert on public.activity to authenticated;
 
 -- 4) 함수 (비밀번호는 서버 안에서만 비교) -------------------------
@@ -294,6 +321,7 @@ begin
   end;
   delete from public.lunch_picks    where true;
   delete from public.schedules      where true;
+  delete from public.schedule_kinds where true;
   delete from public.chat_reads     where true;
   delete from public.messages       where true;
   delete from public.notices        where true;
@@ -350,7 +378,7 @@ create policy "chat files upload" on storage.objects for insert to authenticated
 do $$
 declare t text;
 begin
-  foreach t in array array['members', 'notices', 'messages', 'chat_reads', 'schedules', 'lunch_picks', 'activity'] loop
+  foreach t in array array['members', 'notices', 'messages', 'chat_reads', 'schedules', 'schedule_kinds', 'lunch_picks', 'activity'] loop
     if not exists (
       select 1 from pg_publication_tables
       where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = t

@@ -75,7 +75,7 @@
   const store = makeStore('localStorage');
   const sess = makeStore('sessionStorage');
   const PFX = 'interns-';
-  const K = { members: PFX + 'members', me: PFX + 'me', activity: PFX + 'activity', pres: PFX + 'p:', myStatus: PFX + 'mystatus', notices: PFX + 'notices', messages: PFX + 'messages', reads: PFX + 'reads', schedules: PFX + 'schedules', lunch: PFX + 'lunch', seen: PFX + 'seen:' };
+  const K = { members: PFX + 'members', me: PFX + 'me', activity: PFX + 'activity', pres: PFX + 'p:', myStatus: PFX + 'mystatus', notices: PFX + 'notices', messages: PFX + 'messages', reads: PFX + 'reads', schedules: PFX + 'schedules', kinds: PFX + 'kinds', lunch: PFX + 'lunch', seen: PFX + 'seen:' };
 
   /* ---------- 날짜 ---------- */
   const pad = (n) => String(n).padStart(2, '0');
@@ -107,7 +107,7 @@
   /* =========================================================
      데이터 캐시 — 화면은 항상 여기서 읽고(동기), 쓰기는 백엔드로(비동기)
      ========================================================= */
-  const state = { members: [], activity: [], notices: [], messages: [], reads: {}, schedules: [], lunch: [], online: {}, lastSeen: {}, meId: null };
+  const state = { members: [], activity: [], notices: [], messages: [], reads: {}, schedules: [], kinds: [], lunch: [], online: {}, lastSeen: {}, meId: null };
   const byAtDesc = (a, b) => b.at - a.at;
   const byAt = (a, b) => a.at - b.at;
   const bySched = (a, b) => (a.start + a.at).localeCompare(b.start + b.at);
@@ -128,6 +128,7 @@
       state.messages = arr(K.messages).slice().sort(byAt);
       state.reads = store.get(K.reads, {}) || {};
       state.schedules = arr(K.schedules).slice().sort(bySched);
+      state.kinds = arr(K.kinds);
       state.lunch = arr(K.lunch).slice().sort(byAtDesc);
     },
     meId() { const id = sess.get(K.me, null) || store.get(K.me, null); return id && state.members.some(m => m.id === id) ? id : null; },
@@ -169,6 +170,8 @@
     },
     async addSchedule(s) { const item = Object.assign({ id: newId('s'), at: Date.now() }, s); state.schedules = state.schedules.concat(item).sort(bySched); store.set(K.schedules, state.schedules); return item; },
     async removeSchedule(id) { state.schedules = state.schedules.filter(s => s.id !== id); store.set(K.schedules, state.schedules); },
+    async addKind(k) { if (state.kinds.some(x => x.name === k.name)) throw new Error('duplicate'); state.kinds = state.kinds.concat(Object.assign({ at: Date.now() }, k)); store.set(K.kinds, state.kinds); },
+    async removeKind(name) { state.kinds = state.kinds.filter(x => x.name !== name); store.set(K.kinds, state.kinds); },
     async addLunch(l) { const item = Object.assign({ id: newId('l'), at: Date.now() }, l); state.lunch = [item].concat(state.lunch).slice(0, 50); store.set(K.lunch, state.lunch); return item; },
     async resetAll(pw) {
       if (!(await this.checkPassword(pw))) throw new Error('wrong_password');
@@ -195,7 +198,7 @@
         if (!k || k === K.activity) emit('hub:activity');
         if (!k || k === K.notices) emit('hub:notices');
         if (!k || k === K.messages || k === K.reads) emit('hub:messages');
-        if (!k || k === K.schedules) { emit('hub:schedules'); emit('hub:team'); }
+        if (!k || k === K.schedules || k === K.kinds) { emit('hub:schedules'); emit('hub:team'); }
         if (!k || k === K.lunch) emit('hub:lunch');
       });
     },
@@ -228,6 +231,7 @@
     async loadMessages() { state.messages = check(await sb.from('messages').select('*').order('created_at', { ascending: false }).limit(800)).map(fromMessage).sort(byAt); },   // DB가 내가 볼 수 있는 것만 줌
     async loadReads() { const r = {}; check(await sb.from('chat_reads').select('*')).forEach(x => { r[x.member] = Date.parse(x.read_at) || 0; }); state.reads = r; },
     async loadSchedules() { const from = ymd(addDays(new Date(), -100)); state.schedules = check(await sb.from('schedules').select('*').gte('end_date', from).order('start_date')).map(fromSchedule).sort(bySched); },
+    async loadKinds() { state.kinds = check(await sb.from('schedule_kinds').select('*').order('created_at')).map(r => ({ name: r.name, color: r.color, by: r.created_by, at: Date.parse(r.created_at) || 0 })); },
     async loadLunch() { state.lunch = check(await sb.from('lunch_picks').select('*').order('created_at', { ascending: false }).limit(50)).map(fromLunch); },
     async load() {
       // meId는 끝까지 확인한 뒤에 바꿈 (중간에 비워 두면 그 사이 화면 갱신이 '알림 없음'으로 보고 새 알림 토스트가 다시 뜸)
@@ -235,7 +239,7 @@
       const me = check(await sb.rpc('whoami'));
       if (!me) { state.meId = null; return; }
       state.meId = me.id;
-      await Promise.all([this.loadMembers(), this.loadActivity(), this.loadNotices(), this.loadMessages(), this.loadReads(), this.loadSchedules(), this.loadLunch()]);
+      await Promise.all([this.loadMembers(), this.loadActivity(), this.loadNotices(), this.loadMessages(), this.loadReads(), this.loadSchedules(), this.loadKinds(), this.loadLunch()]);
     },
     async checkPassword(pw) { return !!check(await sb.rpc('check_password', { p_password: pw })); },
     async memberNames(pw) { const r = await sb.rpc('member_names', { p_password: pw }); if (r.error) throw new Error(/wrong_password/.test(errMsg(r.error)) ? 'wrong_password' : errMsg(r.error)); return (r.data || []).map(x => typeof x === 'string' ? x : x.member_names); },
@@ -289,6 +293,12 @@
       return item;
     },
     async removeSchedule(id) { check(await sb.from('schedules').delete().eq('id', id)); state.schedules = state.schedules.filter(s => s.id !== id); },
+    async addKind(k) {
+      const r = await sb.from('schedule_kinds').insert({ name: k.name, color: k.color, created_by: k.by });
+      if (r.error) throw new Error(/duplicate|unique/i.test(errMsg(r.error)) ? 'duplicate' : /row-level/i.test(errMsg(r.error)) ? 'too_many' : errMsg(r.error));
+      if (!state.kinds.some(x => x.name === k.name)) state.kinds = state.kinds.concat(Object.assign({ at: Date.now() }, k));
+    },
+    async removeKind(name) { check(await sb.from('schedule_kinds').delete().eq('name', name)); state.kinds = state.kinds.filter(x => x.name !== name); },
     async addLunch(l) {
       const item = fromLunch(check(await sb.from('lunch_picks').insert({ picked_by: l.by, mode: l.mode, candidates: l.candidates, result: l.result }).select().single()));
       if (!state.lunch.some(x => x.id === item.id)) state.lunch = [item].concat(state.lunch);
@@ -312,8 +322,8 @@
     startLive() {
       const id = state.meId;
       const t = {};
-      const loaders = { members: 'loadMembers', activity: 'loadActivity', notices: 'loadNotices', messages: 'loadMessages', chat_reads: 'loadReads', schedules: 'loadSchedules', lunch_picks: 'loadLunch' };
-      const events = { members: ['hub:team'], activity: ['hub:activity'], notices: ['hub:notices'], messages: ['hub:messages'], chat_reads: ['hub:messages'], schedules: ['hub:schedules', 'hub:team'], lunch_picks: ['hub:lunch'] };
+      const loaders = { members: 'loadMembers', activity: 'loadActivity', notices: 'loadNotices', messages: 'loadMessages', chat_reads: 'loadReads', schedules: 'loadSchedules', schedule_kinds: 'loadKinds', lunch_picks: 'loadLunch' };
+      const events = { members: ['hub:team'], activity: ['hub:activity'], notices: ['hub:notices'], messages: ['hub:messages'], chat_reads: ['hub:messages'], schedules: ['hub:schedules', 'hub:team'], schedule_kinds: ['hub:schedules', 'hub:team'], lunch_picks: ['hub:lunch'] };
       const reload = (tb) => { clearTimeout(t[tb]); t[tb] = setTimeout(async () => {
         try {
           if (tb === 'members') {
@@ -449,10 +459,25 @@
     downloadUrl(f) { return backend.downloadUrl(f.path, f.name); },
     async markRead(other) { try { await backend.markRead(team.meId(), other); } catch (e) { console.warn(e); } },
   };
-  const KINDS = TEAM.scheduleKinds.length ? TEAM.scheduleKinds : ['연차', '오전 반차', '오후 반차', '출장', '외근', '교육', '재택', '기타'];
-  const kindClass = (k) => ({ '연차': 'off', '오전 반차': 'half', '오후 반차': 'half', '출장': 'trip', '외근': 'trip', '교육': 'edu', '재택': 'home' })[k] || 'etc';
+  const BASE_KINDS = TEAM.scheduleKinds.length ? TEAM.scheduleKinds : ['연차', '오전 반차', '오후 반차', '출장', '외근', '교육', '재택', '기타'];
+  const BASE_CLASS = { '연차': 'off', '오전 반차': 'half', '오후 반차': 'half', '출장': 'trip', '외근': 'trip', '교육': 'edu', '재택': 'home' };
+  // 직접 만드는 종류에 고를 수 있는 색 (이름은 화면 읽기용)
+  const KIND_COLORS = [['pink', '분홍'], ['green', '초록'], ['red', '빨강'], ['blue', '파랑'], ['edu', '보라'], ['home', '하늘'], ['off', '주황'], ['trip', '청록']];
+  const kindClass = (k) => { const c = state.kinds.find(x => x.name === k); return c ? c.color : (BASE_CLASS[k] || 'etc'); };
+  const cleanKind = (v) => String(v || '').replace(/\s+/g, ' ').trim();
   const schedules = {
-    KINDS, kindClass,
+    BASE_KINDS, KIND_COLORS, kindClass,
+    get KINDS() { return BASE_KINDS.concat(state.kinds.map(x => x.name).filter(n => !BASE_KINDS.includes(n))); },
+    custom() { return state.kinds.slice(); },
+    isCustom(name) { return state.kinds.some(x => x.name === name); },
+    async addKind(name, color) {
+      name = cleanKind(name);
+      if (!name || name.length > 10) throw new Error('bad_name');
+      if (this.KINDS.includes(name)) return name;   // 이미 있으면 그걸 고름
+      await backend.addKind({ name, color: KIND_COLORS.some(c => c[0] === color) ? color : 'pink', by: team.meId() });
+      return name;
+    },
+    async removeKind(name) { return backend.removeKind(name); },
     all() { return state.schedules.slice(); },
     get(id) { return state.schedules.find(s => s.id === id) || null; },
     on(date) { return state.schedules.filter(s => s.start <= date && s.end >= date); },
@@ -603,7 +628,14 @@
       d.innerHTML = `<form method="dialog" id="sdForm" novalidate>
         <div class="modal__head"><h2 id="sdTitle">일정 올리기</h2><button class="icon-btn" type="button" data-close aria-label="닫기">${icon('close', 20)}</button></div>
         <div class="modal__body">
-          <fieldset class="fld"><legend>종류</legend><div class="kinds" role="radiogroup">${KINDS.map((k, i) => `<label class="kind kind--${kindClass(k)}"><input type="radio" name="sdKind" value="${esc(k)}"${i ? '' : ' checked'}><span>${esc(k)}</span></label>`).join('')}</div></fieldset>
+          <fieldset class="fld"><legend>종류</legend><div class="kinds" role="radiogroup" id="sdKinds"></div>
+            <div class="kmake" id="sdMake" hidden>
+              <input type="text" id="kmName" maxlength="10" placeholder="예: 병원, 외부 미팅" aria-label="새 일정 종류 이름 (10자까지)" autocomplete="off">
+              <span class="kmake__colors" role="radiogroup" aria-label="색">${schedules.KIND_COLORS.map(([c, n], i) => `<label class="kcol chip--${c}" title="${n}"><input type="radio" name="kmColor" value="${c}"${i ? '' : ' checked'} aria-label="${n}"><i></i></label>`).join('')}</span>
+              <span class="kmake__btns"><button class="btn btn--ghost btn--sm" type="button" id="kmCancel">취소</button><button class="btn btn--accent btn--sm" type="button" id="kmAdd">추가</button></span>
+              <small class="kmake__note" id="kmNote">만든 종류는 다른 멤버도 같이 써요</small>
+            </div>
+          </fieldset>
           <div class="fld-row fld-row--2">
             <label class="fld"><span>시작일 <em>*</em></span><input type="date" id="sdStart" required></label>
             <label class="fld"><span>종료일</span><input type="date" id="sdEnd"><small class="fld__err" id="sdErr"></small></label>
@@ -614,17 +646,69 @@
         <div class="modal__foot"><button class="btn btn--ghost" type="button" data-close>취소</button><button class="btn btn--accent" type="submit" id="sdSave">올리기</button></div>
       </form>`;
       d.querySelectorAll('[data-close]').forEach(b => b.onclick = () => d.close());
-      const half = () => /반차/.test(d.querySelector('input[name=sdKind]:checked').value);
+      const picked = () => { const r = d.querySelector('input[name=sdKind]:checked'); return r ? r.value : schedules.KINDS[0]; };
+      const half = () => /반차/.test(picked());
+      // 종류 칩 그리기 (내가 만든 종류엔 × — 지워도 이미 올린 일정 글자는 그대로)
+      const paintKinds = (sel) => {
+        const me = team.meId(), list = schedules.KINDS;
+        if (!list.includes(sel)) sel = list[0];
+        $('#sdKinds', d).innerHTML = list.map(k => { const c = state.kinds.find(x => x.name === k);
+          return `<span class="kind-wrap"><label class="kind kind--${kindClass(k)}${c ? ' kind--custom' : ''}${c && c.by === me ? ' kind--mine' : ''}"><input type="radio" name="sdKind" value="${esc(k)}"${k === sel ? ' checked' : ''}><span>${esc(k)}</span></label>${c && c.by === me ? `<button type="button" class="kind__x" data-kdel="${esc(k)}" aria-label="'${esc(k)}' 종류 지우기" title="이 종류 지우기">${icon('close', 11)}</button>` : ''}</span>`; }).join('') +
+          `<button type="button" class="kind-add" id="kindAdd" aria-expanded="${!$('#sdMake', d).hidden}">${icon('plus', 14)}직접 만들기</button>`;
+        d.querySelectorAll('input[name=sdKind]').forEach(r => r.addEventListener('change', sync));
+        $('#kindAdd', d).onclick = () => openMake(true);
+        d.querySelectorAll('[data-kdel]').forEach(b => b.onclick = async () => {
+          const name = b.dataset.kdel, cur = picked();
+          try { await schedules.removeKind(name); toast(`'${name}' 종류를 지웠어요 · 이미 올린 일정은 그대로예요`); paintKinds(cur === name ? list[0] : cur); sync(); emit('hub:schedules'); }
+          catch (er) { console.warn(er); toast('종류를 지우지 못했어요'); }
+        });
+      };
+      const openMake = (on) => {
+        $('#sdMake', d).hidden = !on; const a = $('#kindAdd', d); if (a) a.setAttribute('aria-expanded', String(on));
+        if (on) {
+          const used = new Set(state.kinds.map(x => x.color)), free = schedules.KIND_COLORS.find(c => !used.has(c[0])) || schedules.KIND_COLORS[0];
+          d.querySelector(`input[name=kmColor][value="${free[0]}"]`).checked = true;
+          $('#kmName', d).value = ''; $('#kmNote', d).textContent = '만든 종류는 다른 멤버도 같이 써요'; $('#kmNote', d).classList.remove('is-err');
+          $('#kmName', d).focus();
+        } else if (a) a.focus();
+      };
+      const addKind = async () => {
+        const name = $('#kmName', d).value, color = d.querySelector('input[name=kmColor]:checked').value, note = $('#kmNote', d);
+        const bad = (t) => { note.textContent = t; note.classList.add('is-err'); $('#kmName', d).focus(); };
+        if (!name.trim()) return bad('이름을 적어 주세요');
+        const btn = $('#kmAdd', d); btn.disabled = true;
+        try {
+          const existed = schedules.KINDS.includes(name.replace(/\s+/g, ' ').trim());
+          const got = await schedules.addKind(name, color);
+          $('#sdMake', d).hidden = true; paintKinds(got); sync();
+          d.querySelector(`input[name=sdKind][value="${CSS.escape(got)}"]`).focus();
+          toast(existed ? `'${got}'은 이미 있어서 그걸 골랐어요` : `'${got}' 종류를 만들었어요`);
+          if (!existed) emit('hub:schedules');
+        } catch (er) {
+          console.warn(er);
+          bad(er.message === 'duplicate' ? '방금 누가 같은 이름을 만들었어요 · 목록에서 골라 주세요' : er.message === 'too_many' ? '종류는 30개까지 만들 수 있어요 · 안 쓰는 걸 지워 주세요' : '만들지 못했어요 · 연결을 확인해 주세요');
+          if (er.message === 'duplicate') paintKinds(picked());
+        } finally { btn.disabled = false; }
+      };
+      $('#kmAdd', d).onclick = addKind;
+      $('#kmName', d).addEventListener('input', () => { const n = $('#kmNote', d); if (n.classList.contains('is-err')) { n.classList.remove('is-err'); n.textContent = '만든 종류는 다른 멤버도 같이 써요'; } });
+      $('#kmCancel', d).onclick = () => openMake(false);
+      $('#kmName', d).addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); addKind(); }
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); openMake(false); }
+      });
+      d._paint = paintKinds;
+      // 다른 멤버가 종류를 만들거나 지우면 열려 있는 창에도 반영 (고른 것·만드는 중인 건 유지)
+      document.addEventListener('hub:schedules', () => { if (d.open) paintKinds(picked()); });
       const sync = () => {
         const s = $('#sdStart', d), e = $('#sdEnd', d);
         e.disabled = half(); if (half()) e.value = s.value;
         e.min = s.value; if (e.value && s.value && e.value < s.value) e.value = s.value;
       };
-      d.querySelectorAll('input[name=sdKind]').forEach(r => r.addEventListener('change', sync));
       $('#sdStart', d).addEventListener('change', () => { if (!$('#sdEnd', d).value || $('#sdEnd', d).value < $('#sdStart', d).value || half()) $('#sdEnd', d).value = $('#sdStart', d).value; sync(); });
       $('#sdForm', d).addEventListener('submit', async (e) => {
         e.preventDefault();
-        const kind = d.querySelector('input[name=sdKind]:checked').value, start = $('#sdStart', d).value, end = $('#sdEnd', d).value || start, memo = $('#sdMemo', d).value.trim();
+        const kind = picked(), start = $('#sdStart', d).value, end = $('#sdEnd', d).value || start, memo = $('#sdMemo', d).value.trim();
         let err = '';
         if (!start) err = '시작일을 골라 주세요';
         else if (end < start) err = '종료일이 시작일보다 빨라요';
@@ -640,6 +724,7 @@
     }
     d._opener = document.activeElement;
     $('#sdForm', d).reset(); $('#sdErr', d).textContent = '';
+    $('#sdMake', d).hidden = true; d._paint(schedules.KINDS[0]);
     $('#sdStart', d).value = date || todayYmd(); $('#sdEnd', d).value = $('#sdStart', d).value;
     d._sync();
     d.showModal();
