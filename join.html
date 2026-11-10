@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>입장하기 · interns</title>
+  <meta name="description" content="interns에 들어오는 화면.">
+  <meta name="theme-color" content="#121212">
+  <script>
+    try { if (localStorage.getItem('interns-theme') === 'light') document.documentElement.setAttribute('data-theme', 'light'); } catch (e) {}
+  </script>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%2301539f'/%3E%3Cpath d='M7 15h18a9 9 0 0 1-18 0z' fill='white'/%3E%3Cpath d='M13 7c0 2 1.5 2 1.5 4M18 7c0 2 1.5 2 1.5 4' stroke='white' stroke-width='2' stroke-linecap='round' fill='none'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+  <link rel="stylesheet" href="css/hub.css">
+  <script src="data/team.js" defer></script>
+  <script src="js/hub-core.js" defer></script>
+  <script src="js/join.js" defer></script>
+</head>
+<body class="join-body">
+  <main class="join" id="main">
+    <div class="join__brand">
+      <span class="brand__logo" aria-hidden="true" id="jLogo"></span>
+      <span class="brand__txt"><b id="jTeam">Team</b><small id="jSub"></small></span>
+    </div>
+
+    <section class="card join__card" aria-labelledby="jTitle">
+      <!-- 이미 이 기기에 입장한 사람이 초대 링크를 다시 눌렀을 때 -->
+      <div class="cont" id="contBox" hidden>
+        <div class="cont__who" id="contWho"></div>
+        <h1 class="join__title" id="contTitle" tabindex="-1">이미 들어와 있어요</h1>
+        <p class="join__sub">이 기기에서는 이미 입장해 있어요. 그대로 계속하면 돼요.</p>
+        <button class="btn btn--accent join__go" type="button" id="contGo"></button>
+        <button class="link-btn cont__other" type="button" id="contOther">다른 사람으로 입장하기</button>
+      </div>
+
+      <ol class="steps" aria-label="입장 단계">
+        <li class="is-on" id="s1Dot"><span>1</span>비밀번호</li>
+        <li id="s2Dot"><span>2</span>내 정보</li>
+      </ol>
+
+      <!-- 1단계: 비밀번호 -->
+      <form id="pwForm" novalidate>
+        <h1 class="join__title" id="jTitle">interns에 들어가기</h1>
+        <p class="join__sub" id="jIntro">초대받은 링크예요. 전달받은 비밀번호를 입력해 주세요.</p>
+        <label class="fld">
+          <span>비밀번호</span>
+          <input type="password" id="fPw" autocomplete="off" required>
+          <small class="fld__err" id="ePw"></small>
+        </label>
+        <button class="btn btn--accent join__go" type="submit">다음</button>
+      </form>
+
+      <!-- 2단계: 이름·직급 -->
+      <form id="infoForm" novalidate hidden>
+        <h1 class="join__title" tabindex="-1" id="jTitle2">내 정보 입력</h1>
+        <p class="join__sub">다른 멤버들에게 이 이름으로 보여요.</p>
+        <label class="fld">
+          <span>이름 <em>*</em></span>
+          <input type="text" id="fName" maxlength="12" placeholder="예: 홍길동" autocomplete="name" required>
+          <small class="fld__err" id="eName"></small>
+        </label>
+        <label class="fld">
+          <span>소속 <small class="muted">(선택)</small></span>
+          <input type="text" id="fRole" maxlength="20" placeholder="예: 홍보팀" autocomplete="organization-title">
+        </label>
+        <p class="hint" id="returnList"></p>
+        <p class="hint" id="returning" hidden></p>
+        <div class="join__row">
+          <button class="btn btn--ghost" type="button" id="backPw">이전</button>
+          <button class="btn btn--accent join__go" type="submit" id="enterBtn">입장하기</button>
+        </div>
+      </form>
+    </section>
+
+    <p class="join__note" id="jNote" aria-live="polite"></p>
+  </main>
+</body>
+</html>

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>점심 뽑기 · interns</title>
+  <meta name="description" content="점심 후보를 넣고 돌림판이나 랜덤 뽑기로 골라요.">
+  <meta name="theme-color" content="#121212">
+  <script>
+    try { if (localStorage.getItem('interns-theme') === 'light') document.documentElement.setAttribute('data-theme', 'light'); } catch (e) {}
+  </script>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%2301539f'/%3E%3Cpath d='M7 15h18a9 9 0 0 1-18 0z' fill='white'/%3E%3Cpath d='M13 7c0 2 1.5 2 1.5 4M18 7c0 2 1.5 2 1.5 4' stroke='white' stroke-width='2' stroke-linecap='round' fill='none'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+  <link rel="stylesheet" href="css/hub.css">
+  <script src="data/team.js" defer></script>
+  <script src="js/hub-core.js" defer></script>
+  <script src="js/lunch.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">본문으로 건너뛰기</a>
+  <div class="shell">
+    <aside class="side" id="side" aria-label="사이드바"></aside>
+    <div class="scrim" id="scrim" aria-hidden="true"></div>
+    <div class="main-col">
+      <header class="top" id="top"></header>
+      <main class="page" id="main" tabindex="-1">
+        <a class="back" href="index.html"><span data-ic="back"></span>홈으로</a>
+        <div class="page__head">
+          <div>
+            <h1 class="page__title">점심 뽑기</h1>
+            <p class="page__sub">후보를 1~4개 넣고 돌려요. 뽑은 결과는 다른 멤버들 화면에도 바로 떠요.</p>
+          </div>
+        </div>
+        <div class="lunch">
+          <section class="card lunch__form" aria-labelledby="candTitle">
+            <div class="card__head"><h2 class="card__title" id="candTitle"><span data-ic="bowl"></span>오늘의 후보</h2><button class="link-btn" type="button" id="clearBtn">비우기</button></div>
+            <div class="cands" id="cands"></div>
+            <div>
+              <p class="lunch__label">빠르게 넣기</p>
+              <div class="ideas" id="ideas"></div>
+            </div>
+            <div class="mode seg" role="radiogroup" aria-label="뽑는 방식">
+              <label><input type="radio" name="mode" value="wheel" checked><span>돌림판</span></label>
+              <label><input type="radio" name="mode" value="draw"><span>랜덤 뽑기</span></label>
+            </div>
+            <button class="btn btn--accent lunch__go" type="button" id="goBtn"></button>
+            <p class="fld__err" id="candErr" role="alert"></p>
+          </section>
+          <section class="card lunch__stage" aria-labelledby="stageTitle">
+            <h2 class="sr" id="stageTitle">결과</h2>
+            <div class="stage" id="stage"></div>
+            <div class="result" id="result" aria-live="polite"></div>
+          </section>
+          <section class="card lunch__hist" aria-labelledby="histTitle">
+            <div class="card__head"><h2 class="card__title" id="histTitle"><span data-ic="pulse"></span>최근 점심 기록</h2></div>
+            <ul class="list" id="hist"></ul>
+          </section>
+        </div>
+      </main>
+    </div>
+  </div>
+</body>
+</html>
