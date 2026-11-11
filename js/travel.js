@@ -17,6 +17,8 @@ window.Hub.boot(function () {
   /* =========================================================
      규칙 (라이트 + v11: 라인·트리플 독점 승리, 우주여행, 무인도 탈출비, 인수)
      ========================================================= */
+  // 규칙 버전: 저장할 때 state.rv에 넣음. 서버는 이보다 낮은(예전 화면 캐시) 저장을 막고, 화면은 더 높은 판이면 새로고침 안내
+  const RULES = 4;   // 4: 더블이면 한 번 더 · 더블 2번 연속이면 무인도
   const N = 28, START_CASH = 1500, SALARY = 200, ISLAND = 7, ISL_TURNS = 2, SPACE = 21, ESCAPE = 100, TAKE = 1.5, TRIPLE = 3;
   const C = (n, g, p) => ({ k: 'city', n, g, p });
   const TILES = [
@@ -155,7 +157,7 @@ window.Hub.boot(function () {
       if (card < 0) return;
       const c = CARDS[card]; st.card = { c: card, s }; log(st, g, s, `${who} 님 찬스: ${c.t} (${c.d})`); c.f(st, g, s);
     } else if (t.k === 'tax') { if (owe(st, g, s, null, t.p, '여행세') === true) log(st, g, s, `${who} 님 · 여행세 ${won(t.p)}`); }
-    else if (t.k === 'island') { st.isl[s] = ISL_TURNS; log(st, g, s, `${who} 님 · 무인도에 갇혔어요 (2번 쉬어요, 더블이면 탈출)`); }
+    else if (t.k === 'island') { st.isl[s] = ISL_TURNS; log(st, g, s, `${who} 님 · 무인도에 갇혔어요 · 다음 차례부터 '주사위(더블이면 탈출)' 또는 '100만 내고 탈출' 중에 골라요`); }
     else if (t.k === 'space') { st.space[s] = true; log(st, g, s, `${who} 님 · 우주여행! 다음 차례에 가고 싶은 칸으로 바로 가요`); }
     else if (t.k === 'rest') log(st, g, s, `${who} 님 · 휴게소에서 쉬어 가요`);
   }
@@ -184,11 +186,14 @@ window.Hub.boot(function () {
     return { reason: 'rounds', winners: act.filter(s => worth(st, s) === best).map(s => g.players[s]) };
   }
   function nextSeat(st, g, s) { for (let k = 1; k <= st.n; k++) { const c = (s + k) % st.n; if (!isOut(st, g, c)) return c; } return s; }
+  // 차례 끝. 더블이었으면(st.again) 같은 사람이 한 번 더 — 바퀴 수(tc)는 안 셈. 무인도에 갔거나 파산했으면 한 번 더 없음
   function endTurn(st, g, count) {
     st.pend = null; st.phase = 'roll';
-    if (count !== false) st.tc[st.cur]++;
+    const s = st.cur, again = !!st.again && !isOut(st, g, s) && !st.isl[s];
+    st.again = false;
+    if (!again) { if (count !== false) st.tc[s]++; st.dbl = 0; }
     st.end = finish(st, g);
-    if (!st.end) st.cur = nextSeat(st, g, st.cur);
+    if (!st.end && !again) st.cur = nextSeat(st, g, s);
   }
   // 행동들 ---------------------------------------------------------
   function doRoll(st, g, escape) {
@@ -198,10 +203,14 @@ window.Hub.boot(function () {
     st.dice = r.d; st.card = null; st.rolled = true;
     const sum = r.d[0] + r.d[1], dbl = r.d[0] === r.d[1];
     log(st, g, s, `${who} 님 주사위 ${r.d[0]}+${r.d[1]}${dbl ? ' 더블!' : ''}`);
+    st.again = false;
     if (st.isl[s] > 0) {
-      if (dbl) { st.isl[s] = 0; log(st, g, s, `${who} 님 · 더블로 무인도 탈출!`); }
+      if (dbl) { st.isl[s] = 0; st.dbl = 0; log(st, g, s, `${who} 님 · 더블로 무인도 탈출!`); }   // 탈출한 더블은 한 번 더 없음
       else { st.isl[s]--; log(st, g, s, `${who} 님 · 무인도에서 ${st.isl[s] ? '한 번 더 쉬어요' : '쉬었어요 · 다음 차례에 나가요'}`); return endTurn(st, g); }
-    }
+    } else if (dbl && (st.dbl || 0) >= 1) {
+      log(st, g, s, `${who} 님 · 더블 2번 연속! 무인도로 가요`);               // 움직이지 않고 바로 무인도
+      warp(st, g, s, ISLAND, false); st.isl[s] = ISL_TURNS; return endTurn(st, g);
+    } else if (dbl) { st.dbl = 1; st.again = true; log(st, g, s, `${who} 님 · 더블이라 한 번 더 굴려요 (또 더블이면 무인도)`); }
     moveBy(st, g, s, sum); land(st, g, s, r.c);
     if (!st.pend || isOut(st, g, s)) endTurn(st, g);
   }
@@ -247,6 +256,7 @@ window.Hub.boot(function () {
   // 3분 넘게 안 둔 사람 차례 넘기기 / 기권한 사람 차례 넘기기
   function skip(st, g) {
     const s = st.cur;
+    st.again = false;   // 자리 비움으로 넘길 땐 더블 한 번 더도 없음
     if (!isOut(st, g, s) && st.pend && st.pend.type === 'debt') { log(st, g, s, `${sname(g, s)} 님이 자리를 비워서 모자란 돈은 자동으로 팔아서 냈어요`); return decide(st, g, 'auto'); }
     if (isOut(st, g, s)) { st.pend = null; st.phase = 'roll'; st.end = finish(st, g); if (!st.end) st.cur = nextSeat(st, g, s); return; }
     log(st, g, s, `${sname(g, s)} 님이 자리를 비워서 차례를 넘겼어요`); endTurn(st, g);
@@ -266,7 +276,7 @@ window.Hub.boot(function () {
      서버에 저장
      ========================================================= */
   let busy = false;
-  const FAIL = { not_lobby: '이미 시작했거나 닫힌 방이에요', not_invited: '초대받은 방이 아니에요', not_host: '방장만 시작할 수 있어요', need_players: '아직 다 안 들어왔어요', not_playing: '이미 끝난 게임이에요', not_player: '참가한 게임이 아니에요', not_your_turn: '지금은 내 차례가 아니에요', stale: '다른 화면에서 먼저 진행됐어요 · 새로 불러왔어요', bad_players: '같이 할 사람 수를 확인해 주세요', bad_partner: '팀전은 같은 팀 1명을 골라 주세요', _: '연결을 확인해 주세요' };
+  const FAIL = { not_lobby: '이미 시작했거나 닫힌 방이에요', not_invited: '초대받은 방이 아니에요', not_host: '방장만 시작할 수 있어요', need_players: '아직 다 안 들어왔어요', not_playing: '이미 끝난 게임이에요', not_player: '참가한 게임이 아니에요', not_your_turn: '지금은 내 차례가 아니에요', stale: '다른 화면에서 먼저 진행됐어요 · 새로 불러왔어요', old_client: '새 버전이 나왔어요 · 새로고침해 주세요', bad_players: '같이 할 사람 수를 확인해 주세요', bad_partner: '팀전은 같은 팀 1명을 골라 주세요', _: '연결을 확인해 주세요' };
   async function run(fn, ok) {
     if (busy) return; busy = true;
     try { await fn(); if (ok) H.toast(ok); } catch (e) { console.warn(e); H.toast(FAIL[e.message] || FAIL._); }
@@ -275,8 +285,9 @@ window.Hub.boot(function () {
   // state를 복사해서 fn으로 바꾼 뒤 저장
   function play(g, fn) {
     return run(async () => {
+      if (g.state && (g.state.rv || 0) > RULES) throw new Error('old_client');
       const st = clone(g.state || init(g)); normalize(st, g);
-      st.mv = []; st.rolled = false; actLog = [];
+      st.mv = []; st.rolled = false; st.rv = RULES; actLog = [];
       const by = st.cur;
       fn(st);
       st.lastBy = by; st.lastText = actLog.slice(-2).join(' · ').slice(0, 90); actLog = null;
@@ -378,6 +389,7 @@ window.Hub.boot(function () {
     const c = $('#tvc'); if (!c) return;
     if (!g || g.status !== 'playing') { c.innerHTML = info != null && g && g.players.length ? infoHtml(g, info) : `<div class="tvc__logo">${icon('map', 28)}<b>전국 일주</b><small>국내 여행지 28칸</small></div>`; return; }
     if (info != null && !anim) { c.innerHTML = infoHtml(g, info); return; }
+    if (g.state && (g.state.rv || 0) > RULES) { c.innerHTML = `<span class="tvc__st"><b>새 버전 규칙으로 진행 중이에요</b><small>이 화면은 예전 버전이라 둘 수 없어요</small></span><button class="btn btn--accent btn--sm" type="button" onclick="location.reload()">새로고침</button>`; return; }
     const st = stOf(g), s = st.cur, mine = g.players[s] === me && !g.resigned.includes(me), pm = pickMode(g);
     const round = Math.min(st.rounds, Math.min(...active(st, g).map(x => st.tc[x])) + 1);
     const d = anim && anim.dice ? anim.dice : st.dice;
@@ -409,17 +421,18 @@ window.Hub.boot(function () {
         : `<span class="tvc__st"><span><b>${esc(t.n)}</b>에 ${LV[o[1] + 1]} 올릴까요?</span> <small>${o[0] !== s ? `팀원 ${esc(sname(g, o[0]))} 님 땅 · ` : ''}내 돈 ${won(cash)}</small></span>
            <span class="tvc__btns">${btn('data-pick="build"', `${LV[o[1] + 1]} ${won(b)}`)}${btn('data-pick="skip"', '그대로', true)}</span>`;
     } else if (mine) {
-      body = `<span class="tvc__st"><b>내 차례예요</b>${st.isl[s] ? ` <small>무인도 · 더블이면 탈출, 아니면 ${won(ESCAPE)} 내고 탈출</small>` : ''}</span>
-        <span class="tvc__btns tvc__btns--main"><button class="btn btn--accent tvroll" type="button" id="tvRoll">${icon('dice', 18)}${st.isl[s] ? '주사위 (더블이면 탈출)' : '주사위 굴리기'}</button>${st.isl[s] ? btn('id="tvEscape"', `${won(ESCAPE)} 내고 탈출`, true, st.cash[s] < ESCAPE) : ''}${hasLand ? btn('data-sell-on', '땅 팔기', true) : ''}</span>`;
+      body = `<span class="tvc__st"><b>${st.dbl ? '더블! 한 번 더 굴려요' : '내 차례예요'}</b>${st.dbl ? ' <small>또 더블이 나오면 무인도로 가요</small>' : ''}${st.isl[s] ? ` <small>무인도 · 더블이면 탈출, 아니면 ${won(ESCAPE)} 내고 탈출</small>` : ''}</span>
+        <span class="tvc__btns tvc__btns--main"><button class="btn btn--accent tvroll" type="button" id="tvRoll">${icon('dice', 18)}${st.isl[s] ? '주사위 (더블이면 탈출)' : st.dbl ? '한 번 더 굴리기' : '주사위 굴리기'}</button>${st.isl[s] ? btn('id="tvEscape"', `${won(ESCAPE)} 내고 탈출`, true, st.cash[s] < ESCAPE) : ''}${hasLand ? btn('data-sell-on', '땅 팔기', true) : ''}</span>`;
     } else {
       const stuck = g.players.includes(me) && !g.resigned.includes(me) && Date.now() - g.acted > 180000;
       lastStuck = stuck;
-      const doing = st.pend && st.pend.type === 'debt' ? '돈 마련하는 중' : st.phase === 'decide' ? '고르는 중' : st.space[s] ? '우주여행 갈 곳 고르는 중' : '차례';
+      const doing = st.pend && st.pend.type === 'debt' ? '돈 마련하는 중' : st.phase === 'roll' && st.dbl ? '더블 · 한 번 더 굴리는 중' : st.phase === 'decide' ? '고르는 중' : st.space[s] ? '우주여행 갈 곳 고르는 중' : '차례';
       body = `<span class="tvc__st"><span class="tvc__who" style="--c:${seatColor(st, s)}">${H.avatar(g.players[s])}</span><b>${esc(sname(g, s))}</b> 님 ${doing}</span>${stuck ? `<button class="btn btn--ghost btn--sm" type="button" id="tvSkip">3분 넘게 안 둬서 차례 넘기기</button>` : ''}`;
     }
     const choosing = !!pm || (mine && !anim && st.phase === 'decide' && st.pend);   // 고르는 중엔 고를 것만 (휴대폰 가운데 칸이 좁아서)
     const card = !anim && !choosing && st.card && st.lastBy === st.card.s ? CARDS[st.card.c] : null;
     const last = !anim && !choosing && st.log.length ? st.log[st.log.length - 1].x : '';
+    c.dataset.ver = String(g.ver) + (anim ? ':anim' : '');
     c.innerHTML = `<span class="tvc__round">${round} / ${st.rounds}바퀴${st.mode === 'team' ? ' · 2:2' : ''}</span>
       ${choosing ? '' : `<span class="tvdice${anim && anim.dice ? ' is-rolling' : ''}" aria-label="${d ? `주사위 ${d[0]}, ${d[1]}` : '주사위'}">${d ? `<i>${DICE[d[0]]}</i><i>${DICE[d[1]]}</i>` : '<i>⚀</i><i>⚀</i>'}</span>`}
       ${card ? `<span class="tvcard"><b>찬스</b> ${esc(card.t)} <small>${esc(card.d)}</small></span>` : last ? `<span class="tvc__last">${esc(last)}</span>` : ''}
@@ -514,6 +527,7 @@ window.Hub.boot(function () {
           <li>남의 땅에 서면 통행료. 같은 색 땅을 다 가지면 2배${mode === 'team' ? ' · 같은 팀 땅은 통행료 없고 내 돈으로 건물도 올려 줄 수 있어요' : ''}</li>
           <li>통행료를 낸 뒤 그 땅을 1.5배 값에 <b>인수</b>할 수 있어요(호텔은 불가)${mode === 'team' ? ' · 상대 팀 땅만' : ''}</li>
           <li>돈이 모자라면 팔 땅을 직접 골라요(땅+건물 반값, '자동으로 팔기'도 있음). 다 팔아도 모자라면 파산. 내 차례엔 언제든 땅 팔기 가능</li>
+          <li>주사위 <b>더블이면 한 번 더</b>, 더블 2번 연속이면 무인도로(움직이지 않고 바로)</li>
           <li>찬스 12장 · 무인도 2번 쉬기(더블이면 탈출, ${won(ESCAPE)} 내면 바로 탈출) · 여행세 ${won(100)}</li>
           <li><b>우주여행</b>: 다음 차례에 원하는 칸으로. 강릉~서울은 월급 없음, 그 뒤 칸은 출발을 지나 월급</li>
           <li><b>바로 승리</b>: 한 줄(모서리 사이 땅 5곳) 다 가지면 <b>라인 독점</b>, 같은 색 묶음 ${TRIPLE}개 다 가지면 <b>트리플 독점</b>${mode === 'team' ? ' (팀 땅 합쳐서)' : ''}</li>
