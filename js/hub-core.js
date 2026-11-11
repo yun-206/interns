@@ -170,6 +170,10 @@
     },
     async addSchedule(s) { const item = Object.assign({ id: newId('s'), at: Date.now() }, s); state.schedules = state.schedules.concat(item).sort(bySched); store.set(K.schedules, state.schedules); return item; },
     async removeSchedule(id) { state.schedules = state.schedules.filter(s => s.id !== id); store.set(K.schedules, state.schedules); },
+    async updateSchedule(id, p) {
+      const s = state.schedules.find(x => x.id === id); if (!s) throw new Error('not_found');
+      Object.assign(s, p, { edited: Date.now() }); state.schedules.sort(bySched); store.set(K.schedules, state.schedules); return s;
+    },
     async addKind(k) { if (state.kinds.some(x => x.name === k.name)) throw new Error('duplicate'); state.kinds = state.kinds.concat(Object.assign({ at: Date.now() }, k)); store.set(K.kinds, state.kinds); },
     async removeKind(name) { state.kinds = state.kinds.filter(x => x.name !== name); store.set(K.kinds, state.kinds); },
     async addLunch(l) { const item = Object.assign({ id: newId('l'), at: Date.now() }, l); state.lunch = [item].concat(state.lunch).slice(0, 50); store.set(K.lunch, state.lunch); return item; },
@@ -212,7 +216,7 @@
   const fromMessage = (r) => ({ id: r.id, from: r.sender, to: r.recipient || null, body: r.body || '', at: Date.parse(r.created_at) || 0, readAt: r.read_at ? Date.parse(r.read_at) : null,
     file: r.file_path ? { path: r.file_path, name: r.file_name || '파일', type: r.file_type || '', size: r.file_size || 0 } : null });
   const fromActivity = (r) => ({ who: r.who, what: r.what, where: r.place || '', at: Date.parse(r.at) || 0 });
-  const fromSchedule = (r) => ({ id: r.id, member: r.member, kind: r.kind, start: r.start_date, end: r.end_date, memo: r.memo || '', at: Date.parse(r.created_at) || 0 });
+  const fromSchedule = (r) => ({ id: r.id, member: r.member, kind: r.kind, start: r.start_date, end: r.end_date, memo: r.memo || '', at: Date.parse(r.created_at) || 0, edited: Date.parse(r.updated_at) || 0 });
   const fromLunch = (r) => ({ id: r.id, by: r.picked_by, mode: r.mode, candidates: r.candidates || [], result: r.result, at: Date.parse(r.created_at) || 0 });
   function check(res) { if (res.error) throw res.error; return res.data; }
   const errMsg = (e) => String((e && (e.message || e.msg)) || e || '');
@@ -293,6 +297,13 @@
       return item;
     },
     async removeSchedule(id) { check(await sb.from('schedules').delete().eq('id', id)); state.schedules = state.schedules.filter(s => s.id !== id); },
+    async updateSchedule(id, p) {
+      const rows = check(await sb.from('schedules').update({ kind: p.kind, start_date: p.start, end_date: p.end, memo: p.memo || '', updated_at: new Date().toISOString() }).eq('id', id).select());
+      if (!rows || !rows.length) throw new Error('not_found');   // 남의 일정이거나 이미 지워짐
+      const item = fromSchedule(rows[0]);
+      state.schedules = state.schedules.filter(x => x.id !== id).concat(item).sort(bySched);
+      return item;
+    },
     async addKind(k) {
       const r = await sb.from('schedule_kinds').insert({ name: k.name, color: k.color, created_by: k.by });
       if (r.error) throw new Error(/duplicate|unique/i.test(errMsg(r.error)) ? 'duplicate' : /row-level/i.test(errMsg(r.error)) ? 'too_many' : errMsg(r.error));
@@ -489,6 +500,11 @@
       return item;
     },
     async remove(id) { return backend.removeSchedule(id); },
+    async update(id, s) {
+      const item = await backend.updateSchedule(id, { kind: s.kind, start: s.start, end: s.end, memo: s.memo || '' });
+      activity.add('일정을 바꿨어요', `${rangeLabel(s.start, s.end)} ${s.kind}`);
+      return item;
+    },
   };
   const lunch = {
     all() { return state.lunch.slice().sort(byAtDesc); },
@@ -513,7 +529,7 @@
       state.notices.filter(n => n.author !== me).forEach(n => out.push({ id: 'n:' + n.id, kind: 'notice', who: n.author, at: n.at, text: `${nm(n.author)} 님이 공지를 올렸어요`, sub: n.title, href: 'notices.html#n-' + n.id }));
       state.messages.filter(m => m.to === me).forEach(m => out.push({ id: 'd:' + m.id, kind: 'message', who: m.from, at: m.at, read: !!m.readAt, text: `${nm(m.from)} 님의 쪽지`, sub: messages.preview(m), href: 'messages.html?to=' + encodeURIComponent(m.from) }));
       state.messages.filter(m => !m.to && m.from !== me).forEach(m => out.push({ id: 'g:' + m.id, kind: 'message', who: m.from, at: m.at, read: m.at <= gRead, text: `단체방 · ${nm(m.from)}`, sub: messages.preview(m), href: 'messages.html?to=group' }));
-      state.schedules.filter(s => s.member !== me && s.at).forEach(s => out.push({ id: 's:' + s.id, kind: 'schedule', who: s.member, at: s.at, text: `${nm(s.member)} 님이 일정을 올렸어요`, sub: `${rangeLabel(s.start, s.end)} ${s.kind}${s.memo ? ' · ' + s.memo : ''}`, href: 'schedule.html?date=' + s.start }));
+      state.schedules.filter(s => s.member !== me && s.at).forEach(s => out.push({ id: 's:' + s.id + (s.edited ? ':' + s.edited : ''), kind: 'schedule', who: s.member, at: s.edited || s.at, text: `${nm(s.member)} 님이 일정을 ${s.edited ? '바꿨어요' : '올렸어요'}`, sub: `${rangeLabel(s.start, s.end)} ${s.kind}${s.memo ? ' · ' + s.memo : ''}`, href: 'schedule.html?date=' + s.start }));
       state.lunch.filter(l => l.by !== me).forEach(l => out.push({ id: 'l:' + l.id, kind: 'lunch', who: l.by, at: l.at, text: `${nm(l.by)} 님이 점심을 뽑았어요`, sub: `🍚 ${l.candidates[l.result]} (후보 ${l.candidates.length}개)`, href: 'lunch.html' }));
       return out.sort(byAtDesc).slice(0, 30);
     },
@@ -622,7 +638,7 @@
   }
 
   /* ---------- 일정 올리기 모달 (홈·일정 페이지 공용) ---------- */
-  function openScheduleEditor(date) {
+  function openScheduleEditor(date, editId) {
     const { d, fresh } = makeDialog('schedDialog', '', 'sdTitle');
     if (fresh) {
       d.innerHTML = `<form method="dialog" id="sdForm" novalidate>
@@ -641,7 +657,7 @@
             <label class="fld"><span>종료일</span><input type="date" id="sdEnd"><small class="fld__err" id="sdErr"></small></label>
           </div>
           <label class="fld"><span>메모 <small class="muted">(선택)</small></span><input type="text" id="sdMemo" maxlength="40" placeholder="예: 부산 출장, 병원" autocomplete="off"></label>
-          <p class="hint">${icon('bell', 15)}<span>올리면 다른 멤버들의 <b>알림</b>과 <b>일정 달력</b>에 바로 떠요. 반차는 하루만 골라요.</span></p>
+          <p class="hint" id="sdHint">${icon('bell', 15)}<span>올리면 다른 멤버들의 <b>알림</b>과 <b>일정 달력</b>에 바로 떠요. 반차는 하루만 골라요.</span></p>
         </div>
         <div class="modal__foot"><button class="btn btn--ghost" type="button" data-close>취소</button><button class="btn btn--accent" type="submit" id="sdSave">올리기</button></div>
       </form>`;
@@ -651,6 +667,7 @@
       // 종류 칩 그리기 (내가 만든 종류엔 × — 지워도 이미 올린 일정 글자는 그대로)
       const paintKinds = (sel) => {
         const me = team.meId(), list = schedules.KINDS;
+        if (d._keep && !list.includes(d._keep)) list.push(d._keep);   // 수정 중인 일정의 종류가 지워진 종류여도 그대로 고를 수 있게
         if (!list.includes(sel)) sel = list[0];
         $('#sdKinds', d).innerHTML = list.map(k => { const c = state.kinds.find(x => x.name === k);
           return `<span class="kind-wrap"><label class="kind kind--${kindClass(k)}${c ? ' kind--custom' : ''}${c && c.by === me ? ' kind--mine' : ''}"><input type="radio" name="sdKind" value="${esc(k)}"${k === sel ? ' checked' : ''}><span>${esc(k)}</span></label>${c && c.by === me ? `<button type="button" class="kind__x" data-kdel="${esc(k)}" aria-label="'${esc(k)}' 종류 지우기" title="이 종류 지우기">${icon('close', 11)}</button>` : ''}</span>`; }).join('') +
@@ -716,16 +733,32 @@
         $('#sdErr', d).textContent = err;
         if (err) { $('#sdStart', d).focus(); return; }
         const btn = $('#sdSave', d); btn.disabled = true;
-        try { const item = await schedules.add({ kind, start, end, memo }); d.close(); toast(`${rangeLabel(start, end)} ${kind} 올렸어요`); emit('hub:schedules'); emit('hub:team'); emit('hub:activity'); emit('hub:schedule-added', item.id); }
-        catch (er) { console.warn(er); toast('일정을 올리지 못했어요 · 연결을 확인해 주세요'); }
+        const editing = d._editId;
+        if (editing) {
+          const o = schedules.get(editing);
+          if (o && o.kind === kind && o.start === start && o.end === end && o.memo === memo) { d.close(); toast('바뀐 게 없어요'); btn.disabled = false; return; }
+        }
+        try {
+          const item = editing ? await schedules.update(editing, { kind, start, end, memo }) : await schedules.add({ kind, start, end, memo });
+          d.close(); toast(editing ? `일정을 바꿨어요 · ${rangeLabel(start, end)} ${kind}` : `${rangeLabel(start, end)} ${kind} 올렸어요`);
+          emit('hub:schedules'); emit('hub:team'); emit('hub:activity'); emit('hub:schedule-added', item.id);
+        }
+        catch (er) { console.warn(er); toast(editing ? (er.message === 'not_found' ? '이미 지워진 일정이에요' : '일정을 바꾸지 못했어요 · 연결을 확인해 주세요') : '일정을 올리지 못했어요 · 연결을 확인해 주세요'); }
         finally { btn.disabled = false; }
       });
       d._sync = sync;
     }
     d._opener = document.activeElement;
     $('#sdForm', d).reset(); $('#sdErr', d).textContent = '';
-    $('#sdMake', d).hidden = true; d._paint(schedules.KINDS[0]);
-    $('#sdStart', d).value = date || todayYmd(); $('#sdEnd', d).value = $('#sdStart', d).value;
+    $('#sdMake', d).hidden = true;
+    const ed = editId ? schedules.get(editId) : null;
+    d._editId = ed ? ed.id : null; d._keep = ed ? ed.kind : null;
+    $('#sdTitle', d).textContent = ed ? '일정 수정' : '일정 올리기';
+    $('#sdSave', d).textContent = ed ? '저장' : '올리기';
+    $('#sdHint span', d).innerHTML = ed ? '바꾸면 다른 멤버들의 <b>알림</b>에 \'일정을 바꿨어요\'로 떠요. 반차는 하루만 골라요.' : '올리면 다른 멤버들의 <b>알림</b>과 <b>일정 달력</b>에 바로 떠요. 반차는 하루만 골라요.';
+    d._paint(ed ? ed.kind : schedules.KINDS[0]);
+    if (ed) { $('#sdStart', d).value = ed.start; $('#sdEnd', d).value = ed.end; $('#sdMemo', d).value = ed.memo || ''; }
+    else { $('#sdStart', d).value = date || todayYmd(); $('#sdEnd', d).value = $('#sdStart', d).value; }
     d._sync();
     d.showModal();
   }

@@ -66,11 +66,13 @@ window.Hub.boot(function () {
       <div class="modal__head"><h2 id="sdTitleD">${esc(m.name)} · ${esc(s.kind)}</h2><button class="icon-btn" type="button" data-close aria-label="닫기">${icon('close', 20)}</button></div>
       <div class="modal__body">
         <p class="sd-row">${H.avatar(s.member, 'av--lg')}<span><b>${esc(m.name)}</b><small>${m.role ? esc(m.role) : esc(H.TEAM.name)}</small></span><span class="chip chip--${schedules.kindClass(s.kind)}">${esc(s.kind)}</span></p>
-        <p class="sd-row">${icon('calendar', 18)}<span>${esc(H.rangeLabel(s.start, s.end))}${s.start !== s.end ? ` <small class="muted">(${Math.round((H.parseYmd(s.end) - H.parseYmd(s.start)) / 864e5) + 1}일)</small>` : ''}</span></p>
+        <p class="sd-row">${icon('calendar', 18)}<span>${esc(H.rangeLabel(s.start, s.end))}${s.start !== s.end ? ` <small class="muted">(${Math.round((H.parseYmd(s.end) - H.parseYmd(s.start)) / 864e5) + 1}일)</small>` : ''}${s.edited ? ' <small class="muted">· 수정됨</small>' : ''}</span></p>
         ${s.memo ? `<p class="sd-row">${icon('edit', 18)}<span>${esc(s.memo)}</span></p>` : ''}
       </div>
-      <div class="modal__foot">${mine ? `<button class="btn btn--danger" type="button" id="sdDel">${icon('trash', 16)}삭제</button>` : ''}<button class="btn btn--accent" type="button" data-close>확인</button></div>`;
+      <div class="modal__foot">${mine ? `<button class="btn btn--danger" type="button" id="sdDel">${icon('trash', 16)}삭제</button><button class="btn btn--ghost" type="button" id="sdEdit">${icon('edit', 16)}수정</button>` : ''}<button class="btn btn--accent" type="button" data-close>확인</button></div>`;
     dd.querySelectorAll('[data-close]').forEach(b => b.onclick = () => dd.close());
+    const ed = $('#sdEdit', dd);
+    if (ed) ed.onclick = () => { const op = dd._opener; dd._opener = null; dd.close(); H.openScheduleEditor(null, s.id); const sd = document.getElementById('schedDialog'); if (sd) sd._opener = op; };
     const del = $('#sdDel', dd);
     if (del) del.onclick = async () => {
       try { await schedules.remove(s.id); dd.close(); render(); H.toast('일정을 지웠어요'); document.dispatchEvent(new CustomEvent('hub:schedules')); }

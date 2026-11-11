@@ -89,8 +89,10 @@ create table if not exists public.schedules (
   end_date    date not null,
   memo        text not null default '' check (char_length(memo) <= 40),
   created_at  timestamptz not null default now(),
+  updated_at  timestamptz,
   check (end_date >= start_date and end_date - start_date <= 30)
 );
+alter table public.schedules add column if not exists updated_at timestamptz;   -- v5: 일정 수정
 
 -- 멤버가 직접 만든 일정 종류 (기본 8종 말고). 만든 사람만 지울 수 있고, 지워도 이미 올린 일정의 글자는 그대로
 create table if not exists public.schedule_kinds (
@@ -189,6 +191,7 @@ create policy "chat_reads update" on public.chat_reads  for update to authentica
 create policy "schedules read"    on public.schedules   for select to authenticated using (public.my_member_id() is not null);
 create policy "schedules insert"  on public.schedules   for insert to authenticated with check (member = public.my_member_id());
 create policy "schedules delete"  on public.schedules   for delete to authenticated using (member = public.my_member_id());
+create policy "schedules update"  on public.schedules   for update to authenticated using (member = public.my_member_id()) with check (member = public.my_member_id());
 
 create policy "kinds read"        on public.schedule_kinds for select to authenticated using (public.my_member_id() is not null);
 create policy "kinds insert"      on public.schedule_kinds for insert to authenticated with check (
@@ -211,6 +214,7 @@ revoke update on public.messages from authenticated;
 grant update (read_at) on public.messages to authenticated;      -- 읽음 표시만 바꿀 수 있음
 grant select, insert, update on public.chat_reads to authenticated;
 grant select, insert, delete on public.schedules to authenticated;
+grant update (kind, start_date, end_date, memo, updated_at) on public.schedules to authenticated;   -- 수정은 이 칸들만 (주인·만든 시각은 못 바꿈)
 grant select, insert on public.lunch_picks to authenticated;
 grant select, insert, delete on public.schedule_kinds to authenticated;
 grant select, insert on public.activity to authenticated;
