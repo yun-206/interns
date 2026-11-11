@@ -323,6 +323,7 @@ begin
     delete from storage.objects where bucket_id = 'chat-files';
   exception when others then null;
   end;
+  delete from public.omok_games     where true;
   delete from public.lunch_picks    where true;
   delete from public.schedules      where true;
   delete from public.schedule_kinds where true;
@@ -378,11 +379,127 @@ create policy "chat files read"   on storage.objects for select to authenticated
 create policy "chat files upload" on storage.objects for insert to authenticated
   with check (bucket_id = 'chat-files' and public.can_access_chat_path(name));
 
+-- 5-2) 미니게임: 오목 (v6) ---------------------------------------------
+-- 15×15, 흑 선공, 흑만 33 금지(화면에서 막음), 5개 이상 연속이면 승.
+-- 수(moves)는 0~224 칸 번호(y*15+x)를 둔 순서대로. 짝수 번째 = 흑, 홀수 번째 = 백.
+-- 대국 신청은 바로 insert, 수락·거절·취소·두기·기권은 아래 함수로만(차례·빈칸·승패는 서버가 확인).
+create table if not exists public.omok_games (
+  id          uuid primary key default gen_random_uuid(),
+  black       uuid not null references public.members(id) on delete cascade,
+  white       uuid not null references public.members(id) on delete cascade,
+  created_by  uuid not null references public.members(id) on delete cascade,
+  status      text not null default 'invite' check (status in ('invite', 'playing', 'done', 'declined', 'canceled')),
+  moves       smallint[] not null default '{}',
+  winner      uuid references public.members(id) on delete set null,
+  end_reason  text check (end_reason in ('five', 'resign', 'draw')),
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now(),
+  check (black <> white),
+  check (created_by = black or created_by = white)
+);
+create index if not exists omok_games_updated on public.omok_games (updated_at desc);
+alter table public.omok_games enable row level security;
+revoke all on public.omok_games from anon, authenticated;
+grant select, insert on public.omok_games to authenticated;
+drop policy if exists "omok read"   on public.omok_games;
+drop policy if exists "omok invite" on public.omok_games;
+create policy "omok read"   on public.omok_games for select to authenticated using (public.my_member_id() is not null);   -- 다른 멤버도 관전 가능
+create policy "omok invite" on public.omok_games for insert to authenticated with check (
+  created_by = public.my_member_id() and status = 'invite' and moves = '{}' and winner is null and end_reason is null);
+
+-- 5개 이상 이어졌는지: p_moves 중 p_parity(0=흑,1=백) 돌만 보고 p_idx 기준 4방향
+create or replace function public.omok_five(p_moves smallint[], p_parity int, p_idx int)
+returns boolean language plpgsql immutable as $$
+declare
+  mine int[]; dirs int[][] := array[[1,0],[0,1],[1,1],[1,-1]];
+  d int; sx int; sy int; x int; y int; n int;
+begin
+  select coalesce(array_agg(m), '{}') into mine from unnest(p_moves) with ordinality as u(m, o) where (o - 1) % 2 = p_parity;
+  for d in 1..4 loop
+    sx := dirs[d][1]; sy := dirs[d][2]; n := 1;
+    x := p_idx % 15 + sx; y := p_idx / 15 + sy;
+    while x between 0 and 14 and y between 0 and 14 and (y * 15 + x) = any(mine) loop n := n + 1; x := x + sx; y := y + sy; end loop;
+    x := p_idx % 15 - sx; y := p_idx / 15 - sy;
+    while x between 0 and 14 and y between 0 and 14 and (y * 15 + x) = any(mine) loop n := n + 1; x := x - sx; y := y - sy; end loop;
+    if n >= 5 then return true; end if;
+  end loop;
+  return false;
+end $$;
+
+create or replace function public.omok_end(g public.omok_games, p_winner uuid, p_reason text)
+returns void language plpgsql security definer set search_path = public as $$
+declare loser uuid;
+begin
+  update public.omok_games set status = 'done', winner = p_winner, end_reason = p_reason, updated_at = now() where id = g.id;
+  if p_winner is not null then
+    loser := case when p_winner = g.black then g.white else g.black end;
+    insert into public.activity (who, what, place)
+      values (p_winner, '오목에서 이겼어요', coalesce((select name from public.members where id = loser), '') || case when p_reason = 'resign' then ' 님 기권' else ' 님과 대국' end);
+  end if;
+end $$;
+
+create or replace function public.omok_respond(p_game uuid, p_accept boolean)
+returns void language plpgsql security definer set search_path = public as $$
+declare me uuid := public.my_member_id(); g public.omok_games;
+begin
+  select * into g from public.omok_games where id = p_game for update;
+  if g.id is null or g.status <> 'invite' then raise exception 'not_invite'; end if;
+  if me is null or me = g.created_by or me not in (g.black, g.white) then raise exception 'not_yours'; end if;
+  update public.omok_games set status = case when p_accept then 'playing' else 'declined' end, updated_at = now() where id = p_game;
+end $$;
+
+create or replace function public.omok_cancel(p_game uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare me uuid := public.my_member_id(); g public.omok_games;
+begin
+  select * into g from public.omok_games where id = p_game for update;
+  if g.id is null or g.status <> 'invite' then raise exception 'not_invite'; end if;
+  if me is null or me <> g.created_by then raise exception 'not_yours'; end if;
+  update public.omok_games set status = 'canceled', updated_at = now() where id = p_game;
+end $$;
+
+create or replace function public.omok_move(p_game uuid, p_idx int)
+returns void language plpgsql security definer set search_path = public as $$
+declare me uuid := public.my_member_id(); g public.omok_games; n int; turn uuid;
+begin
+  select * into g from public.omok_games where id = p_game for update;
+  if g.id is null or g.status <> 'playing' then raise exception 'not_playing'; end if;
+  n := coalesce(array_length(g.moves, 1), 0);
+  turn := case when n % 2 = 0 then g.black else g.white end;
+  if me is null or me <> turn then raise exception 'not_your_turn'; end if;
+  if p_idx < 0 or p_idx > 224 or p_idx = any(g.moves) then raise exception 'bad_move'; end if;
+  g.moves := g.moves || p_idx::smallint;
+  update public.omok_games set moves = g.moves, updated_at = now() where id = p_game;
+  if public.omok_five(g.moves, n % 2, p_idx) then perform public.omok_end(g, me, 'five');
+  elsif n + 1 >= 225 then perform public.omok_end(g, null, 'draw');
+  end if;
+end $$;
+
+create or replace function public.omok_resign(p_game uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare me uuid := public.my_member_id(); g public.omok_games;
+begin
+  select * into g from public.omok_games where id = p_game for update;
+  if g.id is null or g.status <> 'playing' then raise exception 'not_playing'; end if;
+  if me is null or me not in (g.black, g.white) then raise exception 'not_yours'; end if;
+  perform public.omok_end(g, case when me = g.black then g.white else g.black end, 'resign');
+end $$;
+
+revoke all on function public.omok_end(public.omok_games, uuid, text) from public;
+revoke all on function public.omok_respond(uuid, boolean) from public;
+revoke all on function public.omok_cancel(uuid)           from public;
+revoke all on function public.omok_move(uuid, int)        from public;
+revoke all on function public.omok_resign(uuid)           from public;
+grant execute on function public.omok_respond(uuid, boolean) to authenticated;
+grant execute on function public.omok_cancel(uuid)           to authenticated;
+grant execute on function public.omok_move(uuid, int)        to authenticated;
+grant execute on function public.omok_resign(uuid)           to authenticated;
+
 -- 6) 실시간: 표가 바뀌면 열려 있는 화면에 알림 (RLS에 맞게 각자 볼 수 있는 것만) ----
 do $$
 declare t text;
 begin
-  foreach t in array array['members', 'notices', 'messages', 'chat_reads', 'schedules', 'schedule_kinds', 'lunch_picks', 'activity'] loop
+  foreach t in array array['members', 'notices', 'messages', 'chat_reads', 'schedules', 'schedule_kinds', 'lunch_picks', 'activity', 'omok_games'] loop
     if not exists (
       select 1 from pg_publication_tables
       where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = t
