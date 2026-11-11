@@ -323,6 +323,7 @@ begin
     delete from storage.objects where bucket_id = 'chat-files';
   exception when others then null;
   end;
+  delete from public.bb_games       where true;
   delete from public.omok_games     where true;
   delete from public.lunch_picks    where true;
   delete from public.schedules      where true;
@@ -495,11 +496,156 @@ grant execute on function public.omok_cancel(uuid)           to authenticated;
 grant execute on function public.omok_move(uuid, int)        to authenticated;
 grant execute on function public.omok_resign(uuid)           to authenticated;
 
+-- 5-3) 미니게임: 숫자야구 (v7) -------------------------------------------
+-- 둘이 각자 서로 다른 숫자 3·4자리를 숨기고, 신청한 사람부터 번갈아 상대 숫자를 맞힘.
+-- 먼저 맞힌 쪽이 신청자(먼저 둔 쪽)면 상대에게 같은 횟수 기회를 한 번 더 줌 → 둘 다 맞히면 무승부.
+-- 숨긴 숫자(bb_secrets)는 본인만 읽을 수 있고, 대국이 끝나야 상대에게 공개. 판정은 서버 함수가 함.
+create table if not exists public.bb_games (
+  id          uuid primary key default gen_random_uuid(),
+  p1          uuid not null references public.members(id) on delete cascade,   -- 신청자 · 먼저 맞힘
+  p2          uuid not null references public.members(id) on delete cascade,
+  digits      smallint not null default 3 check (digits in (3, 4)),
+  status      text not null default 'invite' check (status in ('invite', 'setup', 'playing', 'done', 'declined', 'canceled')),
+  ready1      boolean not null default false,
+  ready2      boolean not null default false,
+  guesses     jsonb not null default '[]'::jsonb,     -- [{"by": 멤버, "g": "123", "s": 1, "b": 0}]
+  solved1     boolean not null default false,
+  winner      uuid references public.members(id) on delete set null,
+  end_reason  text check (end_reason in ('solve', 'resign', 'draw')),
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now(),
+  check (p1 <> p2)
+);
+create index if not exists bb_games_updated on public.bb_games (updated_at desc);
+create table if not exists public.bb_secrets (
+  game    uuid not null references public.bb_games(id) on delete cascade,
+  member  uuid not null references public.members(id) on delete cascade,
+  secret  text not null,
+  primary key (game, member)
+);
+alter table public.bb_games   enable row level security;
+alter table public.bb_secrets enable row level security;
+revoke all on public.bb_games, public.bb_secrets from anon, authenticated;
+grant select, insert on public.bb_games to authenticated;
+grant select on public.bb_secrets to authenticated;
+drop policy if exists "bb read"        on public.bb_games;
+drop policy if exists "bb invite"      on public.bb_games;
+drop policy if exists "bb secret read" on public.bb_secrets;
+create policy "bb read"   on public.bb_games for select to authenticated using (public.my_member_id() is not null);
+create policy "bb invite" on public.bb_games for insert to authenticated with check (
+  p1 = public.my_member_id() and status = 'invite' and guesses = '[]'::jsonb and not ready1 and not ready2 and not solved1 and winner is null and end_reason is null);
+-- 내 숫자는 언제나, 상대 숫자는 끝난 대국에서만
+create policy "bb secret read" on public.bb_secrets for select to authenticated using (
+  member = public.my_member_id()
+  or exists (select 1 from public.bb_games g where g.id = game and g.status = 'done' and public.my_member_id() in (g.p1, g.p2)));
+
+create or replace function public.bb_valid(p text, n int)
+returns boolean language sql immutable as $$
+  select p ~ ('^[0-9]{' || n || '}$') and (select count(distinct c) from regexp_split_to_table(p, '') as c) = n;
+$$;
+
+create or replace function public.bb_end(p_game uuid, p_winner uuid, p_reason text)
+returns void language plpgsql security definer set search_path = public as $$
+declare g public.bb_games; loser uuid;
+begin
+  update public.bb_games set status = 'done', winner = p_winner, end_reason = p_reason, updated_at = now() where id = p_game returning * into g;
+  if p_winner is not null then
+    loser := case when p_winner = g.p1 then g.p2 else g.p1 end;
+    insert into public.activity (who, what, place)
+      values (p_winner, '숫자야구에서 이겼어요', coalesce((select name from public.members where id = loser), '') || case when p_reason = 'resign' then ' 님 기권' else ' 님과 대결' end);
+  end if;
+end $$;
+
+create or replace function public.bb_respond(p_game uuid, p_accept boolean)
+returns void language plpgsql security definer set search_path = public as $$
+declare me uuid := public.my_member_id(); g public.bb_games;
+begin
+  select * into g from public.bb_games where id = p_game for update;
+  if g.id is null or g.status <> 'invite' then raise exception 'not_invite'; end if;
+  if me is null or me <> g.p2 then raise exception 'not_yours'; end if;
+  update public.bb_games set status = case when p_accept then 'setup' else 'declined' end, updated_at = now() where id = p_game;
+end $$;
+
+create or replace function public.bb_cancel(p_game uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare me uuid := public.my_member_id(); g public.bb_games;
+begin
+  select * into g from public.bb_games where id = p_game for update;
+  if g.id is null or g.status <> 'invite' then raise exception 'not_invite'; end if;
+  if me is null or me <> g.p1 then raise exception 'not_yours'; end if;
+  update public.bb_games set status = 'canceled', updated_at = now() where id = p_game;
+end $$;
+
+create or replace function public.bb_set_secret(p_game uuid, p_secret text)
+returns void language plpgsql security definer set search_path = public as $$
+declare me uuid := public.my_member_id(); g public.bb_games;
+begin
+  select * into g from public.bb_games where id = p_game for update;
+  if g.id is null or g.status <> 'setup' then raise exception 'not_setup'; end if;
+  if me is null or me not in (g.p1, g.p2) then raise exception 'not_yours'; end if;
+  if not public.bb_valid(p_secret, g.digits) then raise exception 'bad_number'; end if;
+  insert into public.bb_secrets (game, member, secret) values (p_game, me, p_secret)
+    on conflict (game, member) do update set secret = excluded.secret;
+  if me = g.p1 then g.ready1 := true; else g.ready2 := true; end if;
+  update public.bb_games set ready1 = g.ready1, ready2 = g.ready2,
+    status = case when g.ready1 and g.ready2 then 'playing' else 'setup' end, updated_at = now() where id = p_game;
+end $$;
+
+create or replace function public.bb_guess(p_game uuid, p_guess text)
+returns void language plpgsql security definer set search_path = public as $$
+declare me uuid := public.my_member_id(); g public.bb_games; n int; turn uuid; opp uuid; sec text; s int := 0; b int := 0; i int; hit boolean;
+begin
+  select * into g from public.bb_games where id = p_game for update;
+  if g.id is null or g.status <> 'playing' then raise exception 'not_playing'; end if;
+  n := jsonb_array_length(g.guesses);
+  turn := case when n % 2 = 0 then g.p1 else g.p2 end;
+  if me is null or me <> turn then raise exception 'not_your_turn'; end if;
+  if not public.bb_valid(p_guess, g.digits) then raise exception 'bad_number'; end if;
+  opp := case when me = g.p1 then g.p2 else g.p1 end;
+  select secret into sec from public.bb_secrets where game = p_game and member = opp;
+  for i in 1..g.digits loop
+    if substr(p_guess, i, 1) = substr(sec, i, 1) then s := s + 1;
+    elsif position(substr(p_guess, i, 1) in sec) > 0 then b := b + 1; end if;
+  end loop;
+  hit := s = g.digits;
+  update public.bb_games set guesses = guesses || jsonb_build_array(jsonb_build_object('by', me, 'g', p_guess, 's', s, 'b', b)),
+    solved1 = solved1 or (me = g.p1 and hit), updated_at = now() where id = p_game;
+  if me = g.p2 then
+    if g.solved1 and hit then perform public.bb_end(p_game, null, 'draw');
+    elsif g.solved1 then perform public.bb_end(p_game, g.p1, 'solve');
+    elsif hit then perform public.bb_end(p_game, g.p2, 'solve');
+    elsif n + 1 >= 60 then perform public.bb_end(p_game, null, 'draw');   -- 30번씩 해도 못 맞히면 무승부
+    end if;
+  end if;
+end $$;
+
+create or replace function public.bb_resign(p_game uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare me uuid := public.my_member_id(); g public.bb_games;
+begin
+  select * into g from public.bb_games where id = p_game for update;
+  if g.id is null or g.status not in ('setup', 'playing') then raise exception 'not_playing'; end if;
+  if me is null or me not in (g.p1, g.p2) then raise exception 'not_yours'; end if;
+  perform public.bb_end(p_game, case when me = g.p1 then g.p2 else g.p1 end, 'resign');
+end $$;
+
+revoke all on function public.bb_end(uuid, uuid, text)      from public;
+revoke all on function public.bb_respond(uuid, boolean)     from public;
+revoke all on function public.bb_cancel(uuid)               from public;
+revoke all on function public.bb_set_secret(uuid, text)     from public;
+revoke all on function public.bb_guess(uuid, text)          from public;
+revoke all on function public.bb_resign(uuid)               from public;
+grant execute on function public.bb_respond(uuid, boolean)  to authenticated;
+grant execute on function public.bb_cancel(uuid)            to authenticated;
+grant execute on function public.bb_set_secret(uuid, text)  to authenticated;
+grant execute on function public.bb_guess(uuid, text)       to authenticated;
+grant execute on function public.bb_resign(uuid)            to authenticated;
+
 -- 6) 실시간: 표가 바뀌면 열려 있는 화면에 알림 (RLS에 맞게 각자 볼 수 있는 것만) ----
 do $$
 declare t text;
 begin
-  foreach t in array array['members', 'notices', 'messages', 'chat_reads', 'schedules', 'schedule_kinds', 'lunch_picks', 'activity', 'omok_games'] loop
+  foreach t in array array['members', 'notices', 'messages', 'chat_reads', 'schedules', 'schedule_kinds', 'lunch_picks', 'activity', 'omok_games', 'bb_games'] loop
     if not exists (
       select 1 from pg_publication_tables
       where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = t
