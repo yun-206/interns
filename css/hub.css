@@ -1136,7 +1136,14 @@ button.chip:hover { background: color-mix(in srgb, var(--k) 28%, transparent); }
 .tvt--corner .tvt__n { font-size: 13px; }
 .tvt--start { background: color-mix(in srgb, #3ccf86 20%, var(--surface)); }
 .tvt--island { background: color-mix(in srgb, #e3c07a 22%, var(--surface)); }
-.tvt--storm { background: color-mix(in srgb, #8a7dff 20%, var(--surface)); }
+.tvt--space { background: color-mix(in srgb, #8a7dff 24%, var(--surface)); }
+.tvt.is-pick { cursor: crosshair; box-shadow: inset 0 4px 0 var(--g), inset 0 0 0 2px var(--accent-hi); }
+.tvt.is-own.is-pick { box-shadow: inset 0 4px 0 var(--g), inset 0 0 0 2px var(--own), 0 0 0 2px var(--accent-hi); }
+.tvt.is-target { z-index: 2; outline: 3px solid var(--accent-hi); outline-offset: 1px; background: color-mix(in srgb, var(--accent-hi) 26%, var(--surface)); }
+.tvb:has(.is-pick) .tvt:not(.is-pick):not(.is-target) { opacity: .45; }
+.tvteams small { display: block; font-size: 11px; font-weight: 500; color: var(--muted); }
+.tvp__mono { display: block; overflow: hidden; font-size: 10.5px; color: var(--faint); text-overflow: ellipsis; white-space: nowrap; }
+.tvc__btns--main { flex-direction: column; align-items: center; }
 .tvt--chance .tvt__n { color: #f5b83d; }
 .tvt--tax .tvt__n { color: var(--err); }
 .tvg0 { --g: #a0703c; } .tvg1 { --g: #5bc0eb; } .tvg2 { --g: #e05fa6; } .tvg3 { --g: #f08c2b; }

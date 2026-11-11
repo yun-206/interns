@@ -827,13 +827,16 @@ create table if not exists public.tv_games (
   state       jsonb,
   resigned    uuid[] not null default '{}',
   winners     uuid[] not null default '{}',
-  end_reason  text check (end_reason in ('rounds', 'last', 'resign')),
+  end_reason  text,
   started_at  timestamptz,
   acted_at    timestamptz,
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now()
 );
 create index if not exists tv_games_updated on public.tv_games (updated_at desc);
+-- v11: 라인 독점(line)·트리플 독점(color)으로도 끝남 (이미 만든 표면 제약만 바꿈)
+alter table public.tv_games drop constraint if exists tv_games_end_reason_check;
+alter table public.tv_games add constraint tv_games_end_reason_check check (end_reason in ('rounds', 'last', 'resign', 'line', 'color'));
 alter table public.tv_games enable row level security;
 revoke all on public.tv_games from anon, authenticated;
 grant select on public.tv_games to authenticated;
@@ -915,7 +918,7 @@ begin
   foreach w in array coalesce(p_winners, '{}') loop
     insert into public.activity (who, what, place) values (w, '전국 일주에서 이겼어요',
       case when g.mode = 'team' then '2:2 팀전' else array_length(g.players, 1) || '명 개인전' end
-      || case p_reason when 'resign' then ' · 상대 기권' when 'last' then ' · 끝까지 남음' else ' · 총자산 1등' end);
+      || case p_reason when 'resign' then ' · 상대 기권' when 'last' then ' · 끝까지 남음' when 'line' then ' · 라인 독점' when 'color' then ' · 트리플 독점' else ' · 총자산 1등' end);
   end loop;
 end $$;
 
@@ -935,7 +938,7 @@ begin
     acted_at = now(), updated_at = now() where id = p_game;
   if coalesce(p_done, false) then
     select coalesce(array_agg(x), '{}') into w from unnest(coalesce(p_winners, '{}')) x where x = any(g.players);
-    perform public.tv_finish(p_game, w, case when p_reason in ('rounds', 'last') then p_reason else 'rounds' end);
+    perform public.tv_finish(p_game, w, case when p_reason in ('rounds', 'last', 'line', 'color') then p_reason else 'rounds' end);
   end if;
 end $$;
 

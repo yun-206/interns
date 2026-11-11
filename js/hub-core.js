@@ -333,7 +333,7 @@
     _tsave() { state.tv.sort((a, b) => b.upd - a.upd); state.tv = state.tv.slice(0, 40); store.set(K.tv, state.tv); },
     _tfinish(g, winners, reason) {
       Object.assign(g, { status: 'done', winners: winners || [], reason, turn: null, upd: Date.now() });
-      (winners || []).forEach(w => this.addActivity({ who: w, what: '전국 일주에서 이겼어요', where: `${g.mode === 'team' ? '2:2 팀전' : g.players.length + '명 개인전'}${reason === 'resign' ? ' · 상대 기권' : reason === 'last' ? ' · 끝까지 남음' : ' · 총자산 1등'}`, at: Date.now() }));
+      (winners || []).forEach(w => this.addActivity({ who: w, what: '전국 일주에서 이겼어요', where: `${g.mode === 'team' ? '2:2 팀전' : g.players.length + '명 개인전'}${{ resign: ' · 상대 기권', last: ' · 끝까지 남음', line: ' · 라인 독점', color: ' · 트리플 독점' }[reason] || ' · 총자산 1등'}`, at: Date.now() }));
     },
     async tvCreate(inv, mode, rounds, partner) {
       const me = this.meId(); inv = [...new Set(inv)].filter(id => id !== me && state.members.some(m => m.id === id));
@@ -369,7 +369,7 @@
       if (!st || typeof st !== 'object' || Array.isArray(st) || JSON.stringify(st).length > 40000) throw new Error('bad_state');
       if (!done && !g.players.includes(turn)) throw new Error('bad_state');
       Object.assign(g, { ver: g.ver + 1, state: JSON.parse(JSON.stringify(st)), turn: done ? null : turn, acted: Date.now(), upd: Date.now() });
-      if (done) this._tfinish(g, (winners || []).filter(x => g.players.includes(x)), ['rounds', 'last'].includes(reason) ? reason : 'rounds');
+      if (done) this._tfinish(g, (winners || []).filter(x => g.players.includes(x)), ['rounds', 'last', 'line', 'color'].includes(reason) ? reason : 'rounds');
       this._tsave();
     },
     async tvResign(id) {
@@ -926,7 +926,7 @@
         if (tv.pendingFor(g, me)) out.push({ id: 'ti:' + g.id, kind: 'tv', who: g.host, at: g.at, text: `${nm(g.host)} 님이 전국 일주에 불렀어요`, sub: `${kind} · ${g.rounds}바퀴 · 눌러서 참가`, href });
         else if (g.status === 'playing' && g.players.includes(me) && g.ver === 0 && g.host !== me) out.push({ id: 'ts:' + g.id, kind: 'tv', who: g.host, at: g.started || g.upd, text: '전국 일주가 시작됐어요!', sub: g.turn === me ? '내가 먼저 굴려요' : `${nm(g.turn)} 님부터 · ${kind}`, href });
         else if (g.status === 'playing' && g.ver > 0 && tv.myTurn(g, me) && !(g.state && g.players[g.state.lastBy] === me)) { const by = g.state && g.state.lastBy != null ? g.players[g.state.lastBy] : g.host; out.push({ id: 'tt:' + g.id + ':' + g.ver, kind: 'tv', who: by, at: g.upd, text: '전국 일주 · 내 차례예요', sub: (g.state && g.state.lastText) || kind, href }); }
-        else if (g.status === 'done' && g.players.includes(me)) { const win = g.winners.includes(me); out.push({ id: 'te:' + g.id, kind: 'tv', who: g.winners[0] || g.host, at: g.upd, text: !g.winners.length ? '전국 일주 · 끝났어요' : win ? (g.mode === 'team' ? '전국 일주 · 우리 팀 승리 🎉' : '전국 일주 · 1등 🎉') : `전국 일주 · ${g.winners.map(nm).join('·')} 님 승`, sub: g.reason === 'resign' ? '기권으로 끝' : g.reason === 'last' ? '끝까지 남은 쪽이 승' : `${g.rounds}바퀴 · 총자산으로`, href }); }
+        else if (g.status === 'done' && g.players.includes(me)) { const win = g.winners.includes(me); out.push({ id: 'te:' + g.id, kind: 'tv', who: g.winners[0] || g.host, at: g.upd, text: !g.winners.length ? '전국 일주 · 끝났어요' : win ? (g.mode === 'team' ? '전국 일주 · 우리 팀 승리 🎉' : '전국 일주 · 1등 🎉') : `전국 일주 · ${g.winners.map(nm).join('·')} 님 승`, sub: { resign: '기권으로 끝', last: '끝까지 남은 쪽이 승', line: '라인 독점으로 승', color: '트리플 독점으로 승' }[g.reason] || `${g.rounds}바퀴 · 총자산으로`, href }); }
       });
       return out.sort(byAtDesc).slice(0, 30);
     },
