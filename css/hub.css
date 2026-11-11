@@ -1088,3 +1088,25 @@ button.chip:hover { background: color-mix(in srgb, var(--k) 28%, transparent); }
 .bpsc { flex-direction: row; align-items: baseline; justify-content: space-between; padding: 8px 12px; }
 .bpsc b { font-size: 18px; }
 @media (max-width: 900px) { .bpwrap, .bptray { max-width: 520px; } }
+
+/* ---------- 프로필 사진 (v9) ---------- */
+.av--img { background: var(--surface-2); }
+.av > img { display: block; width: 100%; height: 100%; object-fit: cover; border-radius: inherit; pointer-events: none; user-select: none; }
+.av--xxl { width: 120px; height: 120px; font-size: 36px; }
+.menu__av { position: relative; flex: none; width: auto !important; height: auto !important; padding: 0 !important; border-radius: 50% !important; }
+.menu__av > i { position: absolute; right: -3px; bottom: -3px; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--accent); color: #fff; box-shadow: 0 0 0 2px var(--surface); }
+.menu__av:hover .av, .menu__av:focus-visible .av { filter: brightness(.85); }
+.avd { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 10px 0 4px; text-align: center; }
+.avd__txt { font-size: 13px; }
+.avd__foot { align-items: center; }
+.avd__sp { flex: 1; }
+.avc { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.avc[hidden], .avd[hidden] { display: none; }
+.avc__stage { position: relative; width: min(260px, 70vw); aspect-ratio: 1; overflow: hidden; border-radius: 14px; background: #0c0c0c repeating-conic-gradient(#1a1a1a 0 25%, #0c0c0c 0 50%) 0 0 / 20px 20px; cursor: grab; touch-action: none; user-select: none; outline: none; }
+.avc__stage.is-drag { cursor: grabbing; }
+.avc__stage:focus-visible { box-shadow: 0 0 0 2px var(--accent-hi); }
+.avc__stage canvas { display: block; width: 100%; height: 100%; }
+.avc__ring { position: absolute; inset: 0; border-radius: 50%; box-shadow: 0 0 0 999px rgba(0, 0, 0, .55), inset 0 0 0 2px rgba(255, 255, 255, .85); pointer-events: none; }
+.avc__zoom { display: flex; align-items: center; gap: 10px; width: min(260px, 70vw); color: var(--muted); }
+.avc__zoom input { flex: 1; accent-color: var(--accent-hi); }
+.avc .hint { align-self: stretch; }

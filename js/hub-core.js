@@ -54,6 +54,7 @@
     dice: '<rect x="4" y="4" width="16" height="16" rx="4"/><circle cx="9" cy="9" r="1.2" fill="currentColor"/><circle cx="15" cy="15" r="1.2" fill="currentColor"/><circle cx="15" cy="9" r="1.2" fill="currentColor"/><circle cx="9" cy="15" r="1.2" fill="currentColor"/>',
     group: '<circle cx="8" cy="9" r="3"/><circle cx="16" cy="9" r="3"/><path d="M2.5 19c.5-3 2.7-4.8 5.5-4.8s5 1.8 5.5 4.8M13.5 15.2c.8-.6 1.6-1 2.5-1 2.8 0 5 1.8 5.5 4.8"/>',
     clip: '<path d="M20 11.5l-7.8 7.8a5 5 0 0 1-7.1-7.1l8.2-8.2a3.4 3.4 0 0 1 4.8 4.8l-8.2 8.2a1.7 1.7 0 0 1-2.4-2.4l7.5-7.5"/>',
+    camera: '<path d="M4 8.5A2 2 0 0 1 6 6.5h2.2l1.5-2h4.6l1.5 2H18a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><circle cx="12" cy="13" r="3.6"/>',
     image: '<rect x="3.5" y="4.5" width="17" height="15" rx="3"/><circle cx="9" cy="10" r="1.8"/><path d="M20.5 16l-5-5-8.5 8.5"/>',
     file: '<path d="M7 3.5h7l4.5 4.5v12.5H7z"/><path d="M14 3.5V8h4.5"/>',
     download: '<path d="M12 4v11M7 10.5l5 5 5-5M5 19.5h14"/>',
@@ -213,6 +214,12 @@
       return { member: m, isNew };
     },
     async continueAs(id) { sess.set(K.me, id); },
+    async setAvatar(data) {
+      const m = state.members.find(x => x.id === this.meId()); if (!m) throw new Error('not_member');
+      const prev = m.avatar || null; m.avatar = data || null;
+      try { localStorage.setItem(K.members, JSON.stringify(state.members)); }
+      catch (e) { m.avatar = prev; throw new Error('local_full'); }
+    },
     async addActivity(a) { state.activity = [a].concat(state.activity).slice(0, 30); store.set(K.activity, state.activity); },
     async addNotice(n) { const item = Object.assign({ id: newId('n'), at: Date.now() }, n); state.notices = [item].concat(state.notices); store.set(K.notices, state.notices); return item; },
     async removeNotice(id) { state.notices = state.notices.filter(n => n.id !== id); store.set(K.notices, state.notices); },
@@ -356,7 +363,7 @@
   /* ---------- Supabase 백엔드 ---------- */
   let sb = null, channel = null;
   const BUCKET = 'chat-files';
-  const fromMember = (r) => ({ id: r.id, name: r.name, role: r.role || '', joinedAt: Date.parse(r.joined_at) || 0 });
+  const fromMember = (r) => ({ id: r.id, name: r.name, role: r.role || '', joinedAt: Date.parse(r.joined_at) || 0, avatar: r.avatar || null });
   const fromNotice = (r) => ({ id: r.id, tag: r.tag, title: r.title, body: r.body || '', author: r.author, at: Date.parse(r.created_at) || 0 });
   const fromMessage = (r) => ({ id: r.id, from: r.sender, to: r.recipient || null, body: r.body || '', at: Date.parse(r.created_at) || 0, readAt: r.read_at ? Date.parse(r.read_at) : null,
     file: r.file_path ? { path: r.file_path, name: r.file_name || '파일', type: r.file_type || '', size: r.file_size || 0 } : null });
@@ -417,6 +424,11 @@
       return { member: m, isNew: !!res.data.is_new };
     },
     async continueAs() {},
+    async setAvatar(data) {
+      const r = await sb.rpc('set_avatar', { p_avatar: data || null });
+      if (r.error) throw new Error(/bad_avatar/.test(errMsg(r.error)) ? 'bad_avatar' : errMsg(r.error));
+      const m = state.members.find(x => x.id === state.meId); if (m) m.avatar = data || null;
+    },
     async addActivity(a) { check(await sb.from('activity').insert({ who: a.who, what: a.what, place: a.where || '' })); state.activity = [a].concat(state.activity).slice(0, 30); },
     async addNotice(n) {
       const item = fromNotice(check(await sb.from('notices').insert({ tag: n.tag, title: n.title, body: n.body || '', author: n.author }).select().single()));
@@ -581,6 +593,8 @@
   })();
 
   /* ---------- 공개 API ---------- */
+  const AVATAR_RE = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/;
+  const AVATAR_MAX = 200000;   // 글자 수 (setup.sql check와 같음)
   const team = {
     list() { return state.members.slice(); },
     get(id) { return state.members.find(m => m.id === id) || null; },
@@ -591,6 +605,13 @@
     memberNames(pw) { return backend.memberNames(pw); },
     join(pw, name, role, asTabOnly) { return backend.join(pw, name, role, asTabOnly); },
     continueAs(id) { return backend.continueAs(id); },
+    // 프로필 사진: data URL(256×256 JPEG) 또는 null(지우기)
+    async setAvatar(data) {
+      if (data != null && !AVATAR_RE.test(data)) throw new Error('bad_avatar');
+      await backend.setAvatar(data || null);
+      if (data) activity.add('프로필 사진을 바꿨어요');
+      emit('hub:team'); emit('hub:activity');
+    },
     signOut() { return backend.leave(); },
     resetAll(pw) { return backend.resetAll(pw); },
     setStatus(s) { return backend.setStatus(s); },
@@ -823,7 +844,25 @@
   const shortName = (name) => /^[가-힣]{3}$/.test(name || '') ? name.slice(1) : name;
   const initial = (name) => { name = String(name || '?').trim(); return /^[가-힣]+$/.test(name) ? name.slice(-2) : name.slice(0, 2).toUpperCase(); };
   const tone = (id) => { const i = state.members.findIndex(m => m.id === id); return (i < 0 ? 4 : i) % 5; };
-  const avatar = (id, cls) => { const m = member(id); return `<span class="av ${cls || ''}" title="${esc(m.name)}" data-tone="${tone(id)}">${esc(initial(m.name))}</span>`; };
+  // 프로필 사진: data URL을 한 번만 blob: 주소로 바꿔 둠 (화면마다 30KB짜리 글자를 다시 만들지 않게)
+  const avUrls = new Map();
+  function avatarSrc(data) {
+    if (!data || data.length > AVATAR_MAX || !AVATAR_RE.test(data)) return null;
+    let u = avUrls.get(data);
+    if (!u) {
+      try {
+        const i = data.indexOf(','), bin = atob(data.slice(i + 1)), a = new Uint8Array(bin.length);
+        for (let k = 0; k < bin.length; k++) a[k] = bin.charCodeAt(k);
+        u = URL.createObjectURL(new Blob([a], { type: data.slice(5, data.indexOf(';')) }));
+      } catch (e) { u = data; }
+      avUrls.set(data, u);
+    }
+    return u;
+  }
+  const avatar = (id, cls) => {
+    const m = member(id), src = avatarSrc(m.avatar);
+    return `<span class="av${src ? ' av--img' : ''} ${cls || ''}" title="${esc(m.name)}" data-tone="${tone(id)}">${src ? `<img src="${esc(src)}" alt="" draggable="false" decoding="async">` : esc(initial(m.name))}</span>`;
+  };
   const avatars = (ids, max) => { max = max || 4; const extra = ids.length - max; return `<span class="avs">${ids.slice(0, max).map(i => avatar(i)).join('')}${extra > 0 ? `<span class="av av--more">+${extra}</span>` : ''}</span>`; };
   const inviteUrl = () => new URL('join.html?invite=1', location.href).href;
   const isShared = () => backend && backend.mode === 'supabase';
@@ -881,6 +920,149 @@
     const o = $('#invOpen', d); if (o) o.onclick = () => { window.open(inviteUrl(), '_blank', 'noopener'); };
     d._opener = document.activeElement;
     $('#invLink', d).value = inviteUrl();
+    d.showModal();
+  }
+
+  /* ---------- 프로필 사진 모달: 고르기 → 위치·크기 맞추기(동그라미) → 저장 / 지우기 ---------- */
+  const AV_OUT = 256;   // 저장 크기(px). 화면에선 최대 64px라 휴대폰 고해상도에서도 충분
+  async function decodeImage(file) {
+    try { return await createImageBitmap(file, { imageOrientation: 'from-image' }); } catch (e) {}
+    const url = URL.createObjectURL(file);
+    try {
+      const img = new Image(); img.src = url; await img.decode();
+      return img;
+    } finally { setTimeout(() => URL.revokeObjectURL(url), 1000); }
+  }
+  function openAvatarEditor() {
+    const me = team.me(); if (!me) return;
+    const { d, fresh } = makeDialog('avatarDialog', 'modal--sm', 'avTitle');
+    let img = null, S = 260, zoom = 1, x = 0, y = 0, base = 1, busy = false, confirmDel = false;
+    const pts = new Map(); let pinch = null;
+    if (fresh) {
+      d.innerHTML = `
+        <div class="modal__head"><h2 id="avTitle">프로필 사진</h2><button class="icon-btn" type="button" data-close aria-label="닫기">${icon('close', 20)}</button></div>
+        <div class="modal__body">
+          <div class="avd" id="avView">
+            <span class="avd__cur" id="avCur"></span>
+            <p class="muted avd__txt">멤버 목록·쪽지·알림 등 동기들 화면에 이 사진이 보여요.</p>
+          </div>
+          <div class="avc" id="avCrop" hidden>
+            <div class="avc__stage" id="avStage" tabindex="0" role="application" aria-label="사진 위치 맞추기. 끌어서 옮기고, 방향키로 옮기고, + − 키로 크기 조절">
+              <canvas id="avCanvas"></canvas><span class="avc__ring" aria-hidden="true"></span>
+            </div>
+            <label class="avc__zoom"><span aria-hidden="true">${icon('image', 14)}</span><input type="range" id="avZoom" min="1" max="4" step="0.01" value="1" aria-label="사진 크기"><span aria-hidden="true">${icon('image', 20)}</span></label>
+            <p class="hint">${icon('image', 15)}<span>끌어서 위치를, 아래 막대(휴대폰은 두 손가락)로 크기를 맞춰요. 동그라미 안이 보여요.</span></p>
+          </div>
+          <input type="file" id="avFile" accept="image/jpeg,image/png,image/webp,image/gif,image/bmp,image/avif,image/heic,image/heif" hidden>
+        </div>
+        <div class="modal__foot avd__foot" id="avFoot"></div>`;
+      d.querySelectorAll('[data-close]').forEach(b => b.onclick = () => d.close());
+      // 사진 파일을 모달 위에 끌어다 놓아도 됨
+      d.addEventListener('dragover', (e) => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) e.preventDefault(); });
+      d.addEventListener('drop', (e) => { const f = e.dataTransfer && e.dataTransfer.files[0]; if (f) { e.preventDefault(); d._pick(f); } });
+    }
+    const $d = (s) => $(s, d);
+    const cv = $d('#avCanvas'), stage = $d('#avStage'), zr = $d('#avZoom'), file = $d('#avFile');
+    const clamp = () => { const s = base * zoom, w = img.width * s, h = img.height * s; x = Math.min(0, Math.max(S - w, x)); y = Math.min(0, Math.max(S - h, y)); };
+    function draw() {
+      if (!img) return;
+      const dpr = Math.min(3, window.devicePixelRatio || 1);
+      const nS = Math.round(stage.getBoundingClientRect().width) || S;
+      if (nS !== S) { const k = nS / S; x *= k; y *= k; base *= k; S = nS; }   // 창 크기가 바뀌어도 같은 부분이 보이게
+      if (cv.width !== S * dpr) { cv.width = S * dpr; cv.height = S * dpr; }
+      const g = cv.getContext('2d'), s = base * zoom;
+      g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, S, S); g.imageSmoothingQuality = 'high';
+      g.drawImage(img, x, y, img.width * s, img.height * s);
+    }
+    function setZoom(z, cx, cy) {
+      if (!img) return;
+      z = Math.min(4, Math.max(1, z)); cx = cx == null ? S / 2 : cx; cy = cy == null ? S / 2 : cy;
+      const s0 = base * zoom, s1 = base * z;   // (cx, cy) 지점이 그대로 있게
+      x = cx - (cx - x) * s1 / s0; y = cy - (cy - y) * s1 / s0; zoom = z; zr.value = String(z);
+      clamp(); draw();
+    }
+    function foot() {
+      const has = !!(team.me() || {}).avatar;
+      $d('#avFoot').innerHTML = img
+        ? `<button class="btn btn--ghost" type="button" id="avOther">다른 사진</button><span class="avd__sp"></span><button class="btn btn--ghost" type="button" id="avBack">취소</button><button class="btn btn--accent" type="button" id="avSave">${busy ? '저장하는 중…' : '저장'}</button>`
+        : `${has ? `<button class="btn btn--danger" type="button" id="avDel">${icon('trash', 16)}${confirmDel ? '정말 지울까요?' : '사진 지우기'}</button>` : ''}<span class="avd__sp"></span><button class="btn btn--accent" type="button" id="avPick">${icon('camera', 16)}${has ? '사진 바꾸기' : '사진 올리기'}</button>`;
+      const on = (id, fn) => { const b = $d(id); if (b) { b.onclick = fn; b.disabled = busy; } };
+      on('#avPick', () => file.click()); on('#avOther', () => file.click());
+      on('#avBack', () => { img = null; view(); });
+      on('#avSave', save); on('#avDel', del);
+    }
+    function view() {
+      const m = team.me(); if (!m) return;
+      const showCrop = !!img;
+      $d('#avView').hidden = showCrop; $d('#avCrop').hidden = !showCrop;
+      $d('#avCur').innerHTML = avatar(m.id, 'av--xxl');
+      foot();
+      if (showCrop) { draw(); stage.focus({ preventScroll: true }); }
+    }
+    d._repaint = () => { if (d.open && !img && !busy) view(); };
+    d._pick = async (f) => {
+      if (busy) return;
+      if (!/^image\//i.test(f.type || '') && !/\.(jpe?g|png|webp|gif|bmp|avif|heic|heif)$/i.test(f.name || '')) { toast('사진 파일만 올릴 수 있어요'); return; }
+      if (f.size > 30 * 1024 * 1024) { toast('30MB보다 큰 사진은 올릴 수 없어요'); return; }
+      let bmp;
+      try { bmp = await decodeImage(f); } catch (e) { console.warn(e); toast('이 사진은 열 수 없어요 · JPG나 PNG로 바꿔서 올려 주세요'); return; }
+      if (!bmp.width || !bmp.height) { toast('이 사진은 열 수 없어요'); return; }
+      img = bmp; confirmDel = false; zoom = 1; zr.value = '1';
+      $d('#avView').hidden = true; $d('#avCrop').hidden = false;   // 크기를 재려면 먼저 보여야 함
+      S = Math.round(stage.getBoundingClientRect().width) || 260;
+      base = S / Math.min(img.width, img.height);
+      x = (S - img.width * base) / 2; y = (S - img.height * base) / 2;
+      view();
+    };
+    file.onchange = () => { const f = file.files[0]; file.value = ''; if (f) d._pick(f); };
+    zr.oninput = () => setZoom(parseFloat(zr.value));
+    // 끌기(마우스·터치 공용) + 두 손가락 확대
+    const local = (e) => { const r = stage.getBoundingClientRect(); return [(e.clientX - r.left) * S / r.width, (e.clientY - r.top) * S / r.height]; };
+    stage.onpointerdown = (e) => { if (!img) return; e.preventDefault(); stage.setPointerCapture(e.pointerId); pts.set(e.pointerId, local(e)); stage.classList.add('is-drag'); if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch = { dist: Math.hypot(a[0] - b[0], a[1] - b[1]), zoom }; } };
+    stage.onpointermove = (e) => {
+      if (!img || !pts.has(e.pointerId)) return;
+      const prev = pts.get(e.pointerId), cur = local(e); pts.set(e.pointerId, cur);
+      if (pts.size >= 2 && pinch) {
+        const [a, b] = [...pts.values()], dist = Math.hypot(a[0] - b[0], a[1] - b[1]);
+        if (pinch.dist > 0) setZoom(pinch.zoom * dist / pinch.dist, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2);
+      } else { x += cur[0] - prev[0]; y += cur[1] - prev[1]; clamp(); draw(); }
+    };
+    stage.onpointerup = stage.onpointercancel = (e) => { pts.delete(e.pointerId); if (pts.size < 2) pinch = null; if (!pts.size) stage.classList.remove('is-drag'); };
+    stage.onwheel = (e) => { if (!img) return; e.preventDefault(); const [cx, cy] = local(e); setZoom(zoom * (e.deltaY < 0 ? 1.08 : 1 / 1.08), cx, cy); };
+    stage.onkeydown = (e) => {
+      if (!img) return;
+      const k = e.key, st = e.shiftKey ? 30 : 8;
+      if (k === 'ArrowLeft') x -= st; else if (k === 'ArrowRight') x += st; else if (k === 'ArrowUp') y -= st; else if (k === 'ArrowDown') y += st;   // 사진이 화살표 쪽으로 움직임
+      else if (k === '+' || k === '=') { setZoom(zoom * 1.1); e.preventDefault(); return; } else if (k === '-' || k === '_') { setZoom(zoom / 1.1); e.preventDefault(); return; }
+      else if (k === 'Enter') { e.preventDefault(); save(); return; } else return;
+      e.preventDefault(); clamp(); draw();
+    };
+    // 동그라미에 보이는 부분을 256×256 JPEG로 (투명 PNG는 흰 바탕)
+    function render() {
+      const s = base * zoom, c = document.createElement('canvas'); c.width = c.height = AV_OUT;
+      const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, AV_OUT, AV_OUT); g.imageSmoothingQuality = 'high';
+      g.drawImage(img, -x / s, -y / s, S / s, S / s, 0, 0, AV_OUT, AV_OUT);
+      for (const q of [0.86, 0.75, 0.6, 0.45]) { const u = c.toDataURL('image/jpeg', q); if (u.length <= AVATAR_MAX * 0.9) return u; }
+      return null;
+    }
+    async function save() {
+      if (!img || busy) return;
+      const data = render(); if (!data) { toast('사진을 줄이지 못했어요 · 다른 사진으로 해 주세요'); return; }
+      busy = true; foot();
+      try { await team.setAvatar(data); img = null; busy = false; d.close(); toast('프로필 사진을 바꿨어요'); }
+      catch (e) { console.warn(e); busy = false; foot(); toast(e.message === 'local_full' ? '이 브라우저 저장 공간이 꽉 찼어요' : '사진을 저장하지 못했어요 · 연결을 확인해 주세요'); }
+    }
+    async function del() {
+      if (busy) return;
+      if (!confirmDel) { confirmDel = true; foot(); $d('#avDel').focus(); return; }
+      busy = true; foot();
+      try { await team.setAvatar(null); busy = false; confirmDel = false; view(); toast('프로필 사진을 지웠어요'); }
+      catch (e) { console.warn(e); busy = false; foot(); toast('사진을 지우지 못했어요 · 연결을 확인해 주세요'); }
+    }
+    d._opener = document.activeElement;
+    img = null; busy = false; confirmDel = false;
+    d.onclose = () => { img = null; pts.clear(); pinch = null; };
+    view();
     d.showModal();
   }
 
@@ -1140,16 +1322,18 @@
       if (!pm.hidden) return;
       const manual = team.manualStatus(me.id);
       pm.innerHTML = `
-        <div class="menu__head">${avatar(me.id, 'av--lg')}<div><b>${esc(me.name)}</b><small>${me.role ? esc(me.role) + ' · ' : ''}${esc(TEAM.name)}</small></div></div>
+        <div class="menu__head"><button type="button" class="menu__av" id="menuAvBtn" aria-label="프로필 사진 ${me.avatar ? '바꾸기' : '올리기'}" title="프로필 사진">${avatar(me.id, 'av--lg')}<i aria-hidden="true">${icon('camera', 11)}</i></button><div><b>${esc(me.name)}</b><small>${me.role ? esc(me.role) + ' · ' : ''}${esc(TEAM.name)}</small></div></div>
         <p class="menu__label">내 상태</p>
         <div class="status-pick" role="group" aria-label="내 상태">
           ${[['online', '온라인'], ['meeting', '바쁨'], ['away', '자리 비움']].map(([k, l]) => `<button type="button" role="menuitemradio" aria-checked="${manual === k}" data-status="${k}"><i class="st st--${k}" aria-hidden="true"></i>${l}</button>`).join('')}
         </div>
+        <button type="button" role="menuitem" id="menuAvatar">${icon('camera', 16)}<span>프로필 사진 ${me.avatar ? '바꾸기' : '올리기'}</span></button>
         <button type="button" role="menuitem" id="menuInvite">${icon('userPlus', 16)}<span>멤버 초대하기</span></button>
         <button type="button" role="menuitem" id="menuTheme">${icon('sun', 16)}<span>테마 바꾸기</span></button>
         <button type="button" role="menuitem" id="menuOut">${icon('logout', 16)}<span>이 기기에서 나가기</span></button>
         <button type="button" role="menuitem" id="menuReset" class="is-danger">${icon('reset', 16)}<span>전체 초기화</span></button>`;
       pm.querySelectorAll('[data-status]').forEach(b => b.onclick = async () => { menu(false); await team.setStatus(b.dataset.status); paintProfile(); emit('hub:team'); toast(`내 상태를 '${ST[b.dataset.status]}'(으)로 바꿨어요`); });
+      $('#menuAvatar').onclick = $('#menuAvBtn').onclick = () => { menu(false); openAvatarEditor(); };
       $('#menuInvite').onclick = () => { menu(false); openInvite(); };
       $('#menuTheme').onclick = () => { setTheme(!isLight()); menu(false); };
       $('#menuOut').onclick = async () => {
@@ -1171,6 +1355,7 @@
     pm.addEventListener('keydown', (e) => { if (e.key === 'Escape') { menu(false); pb.focus(); } });
     paintProfile();
     document.addEventListener('hub:team', paintProfile);
+    document.addEventListener('hub:team', () => { const ad = $('#avatarDialog'); if (ad && ad._repaint) ad._repaint(); });
     document.addEventListener('hub:tick', paintProfile);
 
     // ---- 알림 패널 ----
@@ -1233,5 +1418,5 @@
   // 페이지 시작: 데이터 준비 → 입장 확인 → 페이지 코드
   function boot(fn) { ready.then(() => { if (requireMe()) fn(); }); }
 
-  window.Hub = { TEAM, $, esc, icon, store, sess, activity, team, notices, messages, schedules, lunch, omok, bb, bp, notifs, openNoticeEditor, openScheduleEditor, openInvite, TAGS, ST, member, shortName, avatar, avatars, ymd, parseYmd, addDays, weekStart, todayYmd, dayLabel, shortDate, rangeLabel, ago, DOW, pad, toast, renderShell, setTheme, isLight, requireMe, inviteUrl, copyText, ready, boot, isShared, showInitError, get initError() { return initError; }, get mode() { return backend ? backend.mode : null; } };
+  window.Hub = { TEAM, $, esc, icon, store, sess, activity, team, notices, messages, schedules, lunch, omok, bb, bp, notifs, openNoticeEditor, openScheduleEditor, openInvite, openAvatarEditor, TAGS, ST, member, shortName, avatar, avatars, ymd, parseYmd, addDays, weekStart, todayYmd, dayLabel, shortDate, rangeLabel, ago, DOW, pad, toast, renderShell, setTheme, isLight, requireMe, inviteUrl, copyText, ready, boot, isShared, showInitError, get initError() { return initError; }, get mode() { return backend ? backend.mode : null; } };
 })();

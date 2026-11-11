@@ -19,6 +19,11 @@ create table if not exists public.members (
   role       text not null default '' check (char_length(role) <= 20),     -- 소속(선택)
   joined_at  timestamptz not null default now()
 );
+-- v9 프로필 사진: 256×256으로 줄인 사진을 data URL 글자로 저장 (본인만 set_avatar 함수로 바꿈)
+alter table public.members add column if not exists avatar text;
+alter table public.members drop constraint if exists members_avatar_check;
+alter table public.members add constraint members_avatar_check check (
+  avatar is null or (char_length(avatar) <= 200000 and avatar ~ '^data:image/(jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$'));
 
 create table if not exists public.member_devices (
   auth_uid   uuid primary key,                                              -- auth.users(id) (익명 로그인)
@@ -297,6 +302,26 @@ begin
 end;
 $$;
 
+-- 내 프로필 사진 바꾸기·지우기 (null이면 지움). 본인 것만, 형식·크기는 표의 check가 한 번 더 확인
+create or replace function public.set_avatar(p_avatar text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare me uuid := public.my_member_id();
+begin
+  if me is null then
+    raise exception 'not_member' using errcode = '42501';
+  end if;
+  if p_avatar is not null and (char_length(p_avatar) > 200000
+      or p_avatar !~ '^data:image/(jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$') then
+    raise exception 'bad_avatar' using errcode = '22023';
+  end if;
+  update public.members set avatar = p_avatar where id = me;
+end;
+$$;
+
 -- 이 기기 연결 끊기 ('이 기기에서 나가기')
 create or replace function public.leave_device()
 returns void
@@ -345,6 +370,8 @@ revoke all on function public.whoami()                       from public;
 revoke all on function public.join_team(text, text, text)    from public;
 revoke all on function public.leave_device()                 from public;
 revoke all on function public.reset_all(text)                from public;
+revoke all on function public.set_avatar(text)               from public;
+grant execute on function public.set_avatar(text)            to authenticated;
 grant execute on function public.my_member_id()              to authenticated;
 grant execute on function public.check_password(text)        to anon, authenticated;
 grant execute on function public.member_names(text)          to anon, authenticated;
