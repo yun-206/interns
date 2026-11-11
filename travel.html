@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>전국 일주 · interns</title>
+  <meta name="description" content="국내 여행지 28칸을 도는 보드게임 · 개인전·2:2 팀전.">
+  <meta name="theme-color" content="#121212">
+  <script>
+    try { if (localStorage.getItem('interns-theme') === 'light') document.documentElement.setAttribute('data-theme', 'light'); } catch (e) {}
+  </script>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%2301539f'/%3E%3Cpath d='M7 15h18a9 9 0 0 1-18 0z' fill='white'/%3E%3Cpath d='M13 7c0 2 1.5 2 1.5 4M18 7c0 2 1.5 2 1.5 4' stroke='white' stroke-width='2' stroke-linecap='round' fill='none'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+  <link rel="stylesheet" href="css/hub.css">
+  <script src="data/team.js" defer></script>
+  <script src="js/hub-core.js" defer></script>
+  <script src="js/travel.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">본문으로 건너뛰기</a>
+  <div class="shell">
+    <aside class="side" id="side" aria-label="사이드바"></aside>
+    <div class="scrim" id="scrim" aria-hidden="true"></div>
+    <div class="main-col">
+      <header class="top" id="top"></header>
+      <main class="page" id="main" tabindex="-1">
+        <a class="back" href="index.html"><span data-ic="back"></span>홈으로</a>
+        <div class="page__head">
+          <div>
+            <h1 class="page__title">전국 일주</h1>
+            <p class="page__sub">주사위를 굴려 국내 여행지 28칸을 돌며 땅을 사고 건물을 올려요. 정해진 바퀴가 끝났을 때 총자산이 가장 많은 사람(팀)이 이겨요.</p>
+          </div>
+        </div>
+        <div class="omok tvz">
+          <section class="card omok__main tvmain" aria-label="전국 일주 보드">
+            <div class="tvps" id="tvps"></div>
+            <div class="tvwrap">
+              <div class="tvb" id="tvb"></div>
+              <div class="oover" id="tvover" hidden></div>
+            </div>
+            <ol class="tvlog" id="tvlog" aria-label="진행 기록"></ol>
+            <p class="sr" id="tvlive" aria-live="polite"></p>
+          </section>
+          <div class="omok__side pvp" id="tvside"></div>
+        </div>
+      </main>
+    </div>
+  </div>
+</body>
+</html>

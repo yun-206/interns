@@ -55,6 +55,7 @@
     group: '<circle cx="8" cy="9" r="3"/><circle cx="16" cy="9" r="3"/><path d="M2.5 19c.5-3 2.7-4.8 5.5-4.8s5 1.8 5.5 4.8M13.5 15.2c.8-.6 1.6-1 2.5-1 2.8 0 5 1.8 5.5 4.8"/>',
     clip: '<path d="M20 11.5l-7.8 7.8a5 5 0 0 1-7.1-7.1l8.2-8.2a3.4 3.4 0 0 1 4.8 4.8l-8.2 8.2a1.7 1.7 0 0 1-2.4-2.4l7.5-7.5"/>',
     camera: '<path d="M4 8.5A2 2 0 0 1 6 6.5h2.2l1.5-2h4.6l1.5 2H18a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><circle cx="12" cy="13" r="3.6"/>',
+    map: '<path d="M3.5 6.5l5-2 7 2.5 5-2v13l-5 2-7-2.5-5 2z"/><path d="M8.5 4.5v13M15.5 7v13"/>',
     image: '<rect x="3.5" y="4.5" width="17" height="15" rx="3"/><circle cx="9" cy="10" r="1.8"/><path d="M20.5 16l-5-5-8.5 8.5"/>',
     file: '<path d="M7 3.5h7l4.5 4.5v12.5H7z"/><path d="M14 3.5V8h4.5"/>',
     download: '<path d="M12 4v11M7 10.5l5 5 5-5M5 19.5h14"/>',
@@ -83,7 +84,7 @@
   const store = makeStore('localStorage');
   const sess = makeStore('sessionStorage');
   const PFX = 'interns-';
-  const K = { members: PFX + 'members', me: PFX + 'me', activity: PFX + 'activity', pres: PFX + 'p:', myStatus: PFX + 'mystatus', notices: PFX + 'notices', messages: PFX + 'messages', reads: PFX + 'reads', schedules: PFX + 'schedules', kinds: PFX + 'kinds', lunch: PFX + 'lunch', omok: PFX + 'omok', bb: PFX + 'bb', bbSec: PFX + 'bbsec', bpRooms: PFX + 'bprooms', bpPlayers: PFX + 'bpplayers', seen: PFX + 'seen:' };
+  const K = { members: PFX + 'members', me: PFX + 'me', activity: PFX + 'activity', pres: PFX + 'p:', myStatus: PFX + 'mystatus', notices: PFX + 'notices', messages: PFX + 'messages', reads: PFX + 'reads', schedules: PFX + 'schedules', kinds: PFX + 'kinds', lunch: PFX + 'lunch', omok: PFX + 'omok', bb: PFX + 'bb', bbSec: PFX + 'bbsec', bpRooms: PFX + 'bprooms', bpPlayers: PFX + 'bpplayers', tv: PFX + 'tv', seen: PFX + 'seen:' };
 
   /* ---------- 날짜 ---------- */
   const pad = (n) => String(n).padStart(2, '0');
@@ -115,7 +116,7 @@
   /* =========================================================
      데이터 캐시 — 화면은 항상 여기서 읽고(동기), 쓰기는 백엔드로(비동기)
      ========================================================= */
-  const state = { members: [], activity: [], notices: [], messages: [], reads: {}, schedules: [], kinds: [], lunch: [], omok: [], bb: [], bbSec: {}, bpRooms: [], bpPlayers: [], online: {}, lastSeen: {}, meId: null };
+  const state = { members: [], activity: [], notices: [], messages: [], reads: {}, schedules: [], kinds: [], lunch: [], omok: [], bb: [], bbSec: {}, bpRooms: [], bpPlayers: [], tv: [], online: {}, lastSeen: {}, meId: null };
   const byAtDesc = (a, b) => b.at - a.at;
   const byAt = (a, b) => a.at - b.at;
   const bySched = (a, b) => (a.start + a.at).localeCompare(b.start + b.at);
@@ -194,6 +195,7 @@
       state.omok = arr(K.omok);
       state.bb = arr(K.bb); state.bbSec = store.get(K.bbSec, {}) || {};
       state.bpRooms = arr(K.bpRooms); state.bpPlayers = arr(K.bpPlayers);
+      state.tv = arr(K.tv);
       state.lunch = arr(K.lunch).slice().sort(byAtDesc);
     },
     meId() { const id = sess.get(K.me, null) || store.get(K.me, null); return id && state.members.some(m => m.id === id) ? id : null; },
@@ -326,6 +328,60 @@
       this._bpsave();
     },
     async omokResign(id) { const me = this.meId(), g = this._og(id); if (g.status !== 'playing') throw new Error('not_playing'); if (![g.black, g.white].includes(me)) throw new Error('not_yours'); this._oend(g, me === g.black ? g.white : g.black, 'resign'); this._osave(); },
+    // 전국 일주 (서버 함수와 같은 규칙: 방·차례·ver만 확인, 게임 계산은 화면 쪽)
+    _tg(id) { const g = state.tv.find(x => x.id === id); if (!g) throw new Error('not_found'); return g; },
+    _tsave() { state.tv.sort((a, b) => b.upd - a.upd); state.tv = state.tv.slice(0, 40); store.set(K.tv, state.tv); },
+    _tfinish(g, winners, reason) {
+      Object.assign(g, { status: 'done', winners: winners || [], reason, turn: null, upd: Date.now() });
+      (winners || []).forEach(w => this.addActivity({ who: w, what: '전국 일주에서 이겼어요', where: `${g.mode === 'team' ? '2:2 팀전' : g.players.length + '명 개인전'}${reason === 'resign' ? ' · 상대 기권' : reason === 'last' ? ' · 끝까지 남음' : ' · 총자산 1등'}`, at: Date.now() }));
+    },
+    async tvCreate(inv, mode, rounds, partner) {
+      const me = this.meId(); inv = [...new Set(inv)].filter(id => id !== me && state.members.some(m => m.id === id));
+      if (!['solo', 'team'].includes(mode)) throw new Error('bad_mode'); if (![10, 15, 20].includes(rounds)) throw new Error('bad_rounds');
+      if ((mode === 'solo' && (inv.length < 1 || inv.length > 3)) || (mode === 'team' && inv.length !== 3)) throw new Error('bad_players');
+      if (mode === 'team' && !inv.includes(partner)) throw new Error('bad_partner');
+      const g = { id: newId('t'), host: me, mode, rounds, invited: inv, joined: [me], partner: mode === 'team' ? partner : null, players: [], seed: null, status: 'lobby', turn: null, ver: 0, state: null, resigned: [], winners: [], reason: null, started: 0, acted: 0, at: Date.now(), upd: Date.now() };
+      state.tv.unshift(g); this._tsave(); return g.id;
+    },
+    async tvJoin(id) { const me = this.meId(), g = this._tg(id); if (g.status !== 'lobby') throw new Error('not_lobby'); if (!g.invited.includes(me)) throw new Error('not_invited'); if (!g.joined.includes(me)) g.joined.push(me); g.upd = Date.now(); this._tsave(); },
+    async tvLeave(id) {
+      const me = this.meId(), g = this._tg(id); if (g.status !== 'lobby') throw new Error('not_lobby'); if (me !== g.host && !g.invited.includes(me)) throw new Error('not_invited');
+      if (me === g.host) g.status = 'canceled'; else { g.invited = g.invited.filter(x => x !== me); g.joined = g.joined.filter(x => x !== me); }
+      g.upd = Date.now(); this._tsave();
+    },
+    async tvStart(id) {
+      const me = this.meId(), g = this._tg(id); if (g.status !== 'lobby') throw new Error('not_lobby'); if (me !== g.host) throw new Error('not_host');
+      const shuffle = (a) => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+      let ps;
+      if (g.mode === 'solo') { if (g.joined.length < 2) throw new Error('need_players'); ps = shuffle(g.joined); }
+      else {
+        if (g.joined.length !== 4 || !g.joined.includes(g.partner)) throw new Error('need_players');
+        const opp = shuffle(g.joined.filter(x => x !== g.host && x !== g.partner)), k = Math.floor(Math.random() * 4);
+        ps = [g.host, opp[0], g.partner, opp[1]]; ps = ps.slice(k).concat(ps.slice(0, k));
+      }
+      Object.assign(g, { status: 'playing', players: ps, turn: ps[0], ver: 0, state: null, seed: 1 + Math.floor(Math.random() * 2147483646), invited: g.joined.filter(x => x !== g.host), started: Date.now(), acted: Date.now(), upd: Date.now() });
+      this._tsave();
+    },
+    async tvCommit(id, ver, st, turn, done, winners, reason) {
+      const me = this.meId(), g = this._tg(id); if (g.status !== 'playing') throw new Error('not_playing'); if (!g.players.includes(me)) throw new Error('not_player');
+      if (ver !== g.ver) throw new Error('stale');
+      if (!(me === g.turn || g.resigned.includes(g.turn) || Date.now() - g.acted > 180000)) throw new Error('not_your_turn');
+      if (!st || typeof st !== 'object' || Array.isArray(st) || JSON.stringify(st).length > 40000) throw new Error('bad_state');
+      if (!done && !g.players.includes(turn)) throw new Error('bad_state');
+      Object.assign(g, { ver: g.ver + 1, state: JSON.parse(JSON.stringify(st)), turn: done ? null : turn, acted: Date.now(), upd: Date.now() });
+      if (done) this._tfinish(g, (winners || []).filter(x => g.players.includes(x)), ['rounds', 'last'].includes(reason) ? reason : 'rounds');
+      this._tsave();
+    },
+    async tvResign(id) {
+      const me = this.meId(), g = this._tg(id); if (g.status !== 'playing') throw new Error('not_playing'); if (!g.players.includes(me)) throw new Error('not_player');
+      if (g.resigned.includes(me)) return;
+      g.resigned = g.resigned.concat(me); g.upd = Date.now();
+      const out = (g.state && Array.isArray(g.state.out)) ? g.state.out : [];
+      const act = g.players.map((p, i) => i).filter(i => !g.resigned.includes(g.players[i]) && !out.includes(g.players[i]));
+      if (g.mode === 'solo' && act.length <= 1) this._tfinish(g, act.map(i => g.players[i]), 'resign');
+      else if (g.mode === 'team' && new Set(act.map(i => i % 2)).size <= 1) this._tfinish(g, act.length ? g.players.filter((p, i) => i % 2 === act[0] % 2) : [], 'resign');
+      this._tsave();
+    },
     async resetAll(pw) {
       if (!(await this.checkPassword(pw))) throw new Error('wrong_password');
       store.keys().filter(k => k.startsWith(PFX) && k !== PFX + 'theme').forEach(k => store.del(k)); sess.keys().filter(k => k.startsWith(PFX)).forEach(k => sess.del(k));
@@ -356,6 +412,7 @@
         if (!k || k === K.omok) emit('hub:omok');
         if (!k || k === K.bb || k === K.bbSec) emit('hub:bb');
         if (!k || k === K.bpRooms || k === K.bpPlayers) emit('hub:bp');
+        if (!k || k === K.tv) emit('hub:tv');
       });
     },
   };
@@ -373,6 +430,7 @@
   const fromBb = (r) => ({ id: r.id, p1: r.p1, p2: r.p2, digits: r.digits, status: r.status, ready1: !!r.ready1, ready2: !!r.ready2, guesses: Array.isArray(r.guesses) ? r.guesses : [], solved1: !!r.solved1, winner: r.winner || null, reason: r.end_reason || null, at: Date.parse(r.created_at) || 0, upd: Date.parse(r.updated_at) || 0 });
   const fromBpRoom = (r) => ({ id: r.id, host: r.host, invited: r.invited || [], target: r.target, seed: r.seed == null ? null : Number(r.seed), status: r.status, winner: r.winner || null, reason: r.end_reason || null, started: Date.parse(r.started_at) || 0, at: Date.parse(r.created_at) || 0, upd: Date.parse(r.updated_at) || 0 });
   const fromBpPlayer = (r) => ({ room: r.room, member: r.member, score: r.score, lines: r.lines, over: !!r.over, joined: Date.parse(r.joined_at) || 0, upd: Date.parse(r.updated_at) || 0 });
+  const fromTv = (r) => ({ id: r.id, host: r.host, mode: r.mode, rounds: r.rounds, invited: r.invited || [], joined: r.joined || [], partner: r.partner || null, players: r.players || [], seed: r.seed == null ? null : Number(r.seed), status: r.status, turn: r.turn || null, ver: r.ver || 0, state: r.state || null, resigned: r.resigned || [], winners: r.winners || [], reason: r.end_reason || null, started: Date.parse(r.started_at) || 0, acted: Date.parse(r.acted_at) || 0, at: Date.parse(r.created_at) || 0, upd: Date.parse(r.updated_at) || 0 });
   const fromLunch = (r) => ({ id: r.id, by: r.picked_by, mode: r.mode, candidates: r.candidates || [], result: r.result, at: Date.parse(r.created_at) || 0 });
   function check(res) { if (res.error) throw res.error; return res.data; }
   const errMsg = (e) => String((e && (e.message || e.msg)) || e || '');
@@ -397,6 +455,7 @@
       state.bpPlayers = ids.length ? check(await sb.from('bp_players').select('*').in('room', ids)).map(fromBpPlayer) : [];
       state.bpRooms = rs;
     },
+    async loadTv() { state.tv = check(await sb.from('tv_games').select('*').order('updated_at', { ascending: false }).limit(40)).map(fromTv); },
     async loadBb() {
       const [gs, ss] = await Promise.all([sb.from('bb_games').select('*').order('updated_at', { ascending: false }).limit(60), sb.from('bb_secrets').select('*')]);
       state.bb = check(gs).map(fromBb);
@@ -411,7 +470,7 @@
       const me = check(await sb.rpc('whoami'));
       if (!me) { state.meId = null; return; }
       state.meId = me.id;
-      await Promise.all([this.loadMembers(), this.loadActivity(), this.loadNotices(), this.loadMessages(), this.loadReads(), this.loadSchedules(), this.loadKinds(), this.loadLunch(), this.loadOmok().catch(e => { console.warn('[interns] 오목 표가 없어요 — setup.sql을 다시 Run 해 주세요', e); state.omok = []; }), this.loadBb().catch(e => { console.warn('[interns] 숫자야구 표가 없어요 — setup.sql을 다시 Run 해 주세요', e); state.bb = []; state.bbSec = {}; }), this.loadBp().catch(e => { console.warn('[interns] 블록 퍼즐 표가 없어요 — setup.sql을 다시 Run 해 주세요', e); state.bpRooms = []; state.bpPlayers = []; })]);
+      await Promise.all([this.loadMembers(), this.loadActivity(), this.loadNotices(), this.loadMessages(), this.loadReads(), this.loadSchedules(), this.loadKinds(), this.loadLunch(), this.loadOmok().catch(e => { console.warn('[interns] 오목 표가 없어요 — setup.sql을 다시 Run 해 주세요', e); state.omok = []; }), this.loadBb().catch(e => { console.warn('[interns] 숫자야구 표가 없어요 — setup.sql을 다시 Run 해 주세요', e); state.bb = []; state.bbSec = {}; }), this.loadBp().catch(e => { console.warn('[interns] 블록 퍼즐 표가 없어요 — setup.sql을 다시 Run 해 주세요', e); state.bpRooms = []; state.bpPlayers = []; }), this.loadTv().catch(e => { console.warn('[interns] 전국 일주 표가 없어요 — setup.sql을 다시 Run 해 주세요', e); state.tv = []; })]);
     },
     async checkPassword(pw) { return !!check(await sb.rpc('check_password', { p_password: pw })); },
     async memberNames(pw) { const r = await sb.rpc('member_names', { p_password: pw }); if (r.error) throw new Error(/wrong_password/.test(errMsg(r.error)) ? 'wrong_password' : errMsg(r.error)); return (r.data || []).map(x => typeof x === 'string' ? x : x.member_names); },
@@ -503,6 +562,17 @@
       if (r.error) { const m = errMsg(r.error).match(/not_lobby|not_invited|not_host|need_players|not_playing|not_player|bad_players|bad_target/); throw new Error(m ? m[0] : errMsg(r.error)); }
       await this.loadBp(); return r.data;
     },
+    async _trpc(fn, args) {
+      const r = await sb.rpc(fn, args);
+      if (r.error) { const m = errMsg(r.error).match(/not_lobby|not_invited|not_host|need_players|not_playing|not_player|not_your_turn|stale|bad_state|bad_players|bad_partner|bad_rounds|bad_mode/); throw new Error(m ? m[0] : errMsg(r.error)); }
+      await this.loadTv(); return r.data;
+    },
+    async tvCreate(inv, mode, rounds, partner) { return this._trpc('tv_create', { p_invited: inv, p_mode: mode, p_rounds: rounds, p_partner: partner || null }); },
+    async tvJoin(id) { return this._trpc('tv_join', { p_game: id }); },
+    async tvLeave(id) { return this._trpc('tv_leave', { p_game: id }); },
+    async tvStart(id) { return this._trpc('tv_start', { p_game: id }); },
+    async tvCommit(id, ver, st, turn, done, winners, reason) { return this._trpc('tv_commit', { p_game: id, p_ver: ver, p_state: st, p_turn: turn || null, p_done: !!done, p_winners: winners || null, p_reason: reason || null }); },
+    async tvResign(id) { return this._trpc('tv_resign', { p_game: id }); },
     async bpCreate(inv, target) { return this._prpc('bp_create', { p_invited: inv, p_target: target }); },
     async bpJoin(id) { return this._prpc('bp_join', { p_room: id }); },
     async bpLeave(id) { return this._prpc('bp_leave', { p_room: id }); },
@@ -537,8 +607,8 @@
     startLive() {
       const id = state.meId;
       const t = {};
-      const loaders = { members: 'loadMembers', activity: 'loadActivity', notices: 'loadNotices', messages: 'loadMessages', chat_reads: 'loadReads', schedules: 'loadSchedules', schedule_kinds: 'loadKinds', lunch_picks: 'loadLunch', omok_games: 'loadOmok', bb_games: 'loadBb', bp_rooms: 'loadBp', bp_players: 'loadBp' };
-      const events = { members: ['hub:team'], activity: ['hub:activity'], notices: ['hub:notices'], messages: ['hub:messages'], chat_reads: ['hub:messages'], schedules: ['hub:schedules', 'hub:team'], schedule_kinds: ['hub:schedules', 'hub:team'], lunch_picks: ['hub:lunch'], omok_games: ['hub:omok'], bb_games: ['hub:bb'], bp_rooms: ['hub:bp'], bp_players: ['hub:bp'] };
+      const loaders = { members: 'loadMembers', activity: 'loadActivity', notices: 'loadNotices', messages: 'loadMessages', chat_reads: 'loadReads', schedules: 'loadSchedules', schedule_kinds: 'loadKinds', lunch_picks: 'loadLunch', omok_games: 'loadOmok', bb_games: 'loadBb', bp_rooms: 'loadBp', bp_players: 'loadBp', tv_games: 'loadTv' };
+      const events = { members: ['hub:team'], activity: ['hub:activity'], notices: ['hub:notices'], messages: ['hub:messages'], chat_reads: ['hub:messages'], schedules: ['hub:schedules', 'hub:team'], schedule_kinds: ['hub:schedules', 'hub:team'], lunch_picks: ['hub:lunch'], omok_games: ['hub:omok'], bb_games: ['hub:bb'], bp_rooms: ['hub:bp'], bp_players: ['hub:bp'], tv_games: ['hub:tv'] };
       const reload = (tb) => { clearTimeout(t[tb]); t[tb] = setTimeout(async () => {
         try {
           if (tb === 'members') {
@@ -570,7 +640,7 @@
     },
   };
 
-  function emitAll() { ['hub:team', 'hub:activity', 'hub:notices', 'hub:messages', 'hub:schedules', 'hub:lunch', 'hub:omok', 'hub:bb', 'hub:bp'].forEach(ev => emit(ev)); }
+  function emitAll() { ['hub:team', 'hub:activity', 'hub:notices', 'hub:messages', 'hub:schedules', 'hub:lunch', 'hub:omok', 'hub:bb', 'hub:bp', 'hub:tv'].forEach(ev => emit(ev)); }
   function netError(e) { console.warn('[interns]', e); toast('서버에 연결하지 못했어요 · 잠시 뒤 다시 시도해 주세요'); }
   function loadScript(src) {
     return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => rej(new Error('script_load_failed')); document.head.appendChild(s); });
@@ -793,10 +863,28 @@
     async report(id, score, lines, over) { return backend.bpReport(id, score, lines, over); },
   };
   const bpApi = bp;   // renderShell 안에서 쓰는 이름
+  // 전국 일주: 방(lobby) → 시작(playing, 자리 순서 players) → 차례마다 commit(state) → done
+  const tv = {
+    ROUNDS: [10, 15, 20],
+    all() { return state.tv.slice().sort((a, b) => b.upd - a.upd); },
+    get(id) { return state.tv.find(g => g.id === id) || null; },
+    isPlayer(g, m) { m = m || team.meId(); return g.status === 'lobby' || g.status === 'canceled' ? g.joined.includes(m) : g.players.includes(m); },
+    pendingFor(g, m) { m = m || team.meId(); return g.status === 'lobby' && g.invited.includes(m) && !g.joined.includes(m); },
+    invitesForMe() { return this.all().filter(g => this.pendingFor(g)); },
+    myTurn(g, m) { m = m || team.meId(); return g.status === 'playing' && g.turn === m && !g.resigned.includes(m); },
+    attention() { return this.invitesForMe().length + this.all().filter(g => this.myTurn(g)).length; },
+    async create(inv, mode, rounds, partner) { return backend.tvCreate(inv, mode, rounds, partner); },
+    async join(id) { return backend.tvJoin(id); },
+    async leave(id) { return backend.tvLeave(id); },
+    async start(id) { return backend.tvStart(id); },
+    async commit(id, ver, st, turn, done, winners, reason) { return backend.tvCommit(id, ver, st, turn, done, winners, reason); },
+    async resign(id) { return backend.tvResign(id); },
+  };
+  const tvApi = tv;
 
   // 알림: 남이 올린 공지 / 나한테 온 쪽지·단체방 / 남이 올린 일정 / 남이 뽑은 점심
   //  안 읽음 — 쪽지: 실제로 안 읽음 / 나머지: 종 패널(또는 그 화면)을 마지막으로 본 시각 이후
-  const SEEN_KINDS = ['notice', 'schedule', 'lunch', 'omok', 'bb', 'bp'];
+  const SEEN_KINDS = ['notice', 'schedule', 'lunch', 'omok', 'bb', 'bp', 'tv'];
   const notifs = {
     seenAt(kind) { const me = team.me(); if (!me) return Date.now(); const all = store.get(K.seen + me.id, null) || {}; return all[kind] || me.joinedAt || 0; },
     list() {
@@ -832,6 +920,13 @@
         if (bp.pendingFor(r, me)) out.push({ id: 'pi:' + r.id, kind: 'bp', who: r.host, at: r.at, text: `${nm(r.host)} 님이 블록 퍼즐 대결에 불렀어요`, sub: `목표 ${r.target}점 먼저 · 눌러서 참가`, href });
         else if (r.status === 'playing' && mine && r.host !== me) out.push({ id: 'ps:' + r.id, kind: 'bp', who: r.host, at: r.started || r.upd, text: '블록 퍼즐 대결이 시작됐어요!', sub: `목표 ${r.target}점 · ${bp.players(r.id).length}명`, href });
         else if (r.status === 'done' && mine) { const p = bp.player(r.id, me); out.push({ id: 'pe:' + r.id, kind: 'bp', who: r.winner || r.host, at: r.upd, text: !r.winner ? '블록 퍼즐 대결 · 비겼어요' : r.winner === me ? '블록 퍼즐 대결 이겼어요 🎉' : `블록 퍼즐 대결 · ${nm(r.winner)} 님 승`, sub: `내 점수 ${p ? p.score : 0}점 · 목표 ${r.target}점`, href }); }
+      });
+      state.tv.forEach(g => {
+        const href = 'travel.html?g=' + g.id, kind = g.mode === 'team' ? '2:2 팀전' : '개인전';
+        if (tv.pendingFor(g, me)) out.push({ id: 'ti:' + g.id, kind: 'tv', who: g.host, at: g.at, text: `${nm(g.host)} 님이 전국 일주에 불렀어요`, sub: `${kind} · ${g.rounds}바퀴 · 눌러서 참가`, href });
+        else if (g.status === 'playing' && g.players.includes(me) && g.ver === 0 && g.host !== me) out.push({ id: 'ts:' + g.id, kind: 'tv', who: g.host, at: g.started || g.upd, text: '전국 일주가 시작됐어요!', sub: g.turn === me ? '내가 먼저 굴려요' : `${nm(g.turn)} 님부터 · ${kind}`, href });
+        else if (g.status === 'playing' && g.ver > 0 && tv.myTurn(g, me) && !(g.state && g.players[g.state.lastBy] === me)) { const by = g.state && g.state.lastBy != null ? g.players[g.state.lastBy] : g.host; out.push({ id: 'tt:' + g.id + ':' + g.ver, kind: 'tv', who: by, at: g.upd, text: '전국 일주 · 내 차례예요', sub: (g.state && g.state.lastText) || kind, href }); }
+        else if (g.status === 'done' && g.players.includes(me)) { const win = g.winners.includes(me); out.push({ id: 'te:' + g.id, kind: 'tv', who: g.winners[0] || g.host, at: g.upd, text: !g.winners.length ? '전국 일주 · 끝났어요' : win ? (g.mode === 'team' ? '전국 일주 · 우리 팀 승리 🎉' : '전국 일주 · 1등 🎉') : `전국 일주 · ${g.winners.map(nm).join('·')} 님 승`, sub: g.reason === 'resign' ? '기권으로 끝' : g.reason === 'last' ? '끝까지 남은 쪽이 승' : `${g.rounds}바퀴 · 총자산으로`, href }); }
       });
       return out.sort(byAtDesc).slice(0, 30);
     },
@@ -1272,6 +1367,7 @@
           ${navItem('omok.html', 'go', '오목', page === 'omok', '<em class="pill pill--count" id="navOmok" hidden></em>')}
           ${navItem('baseball.html', 'ball', '숫자야구', page === 'baseball', '<em class="pill pill--count" id="navBb" hidden></em>')}
           ${navItem('blocks.html', 'blocks', '블록 퍼즐', page === 'blocks', '<em class="pill pill--count" id="navBp" hidden></em>')}
+          ${navItem('travel.html', 'map', '전국 일주', page === 'travel', '<em class="pill pill--count" id="navTv" hidden></em>')}
         </div>
         ${TEAM.links.length ? `<div class="nav__group">
           <p class="nav__label">바로가기</p>
@@ -1360,7 +1456,7 @@
 
     // ---- 알림 패널 ----
     const bb = $('#bellBtn'), np = $('#notifPanel');
-    const KIND_IC = { notice: 'megaphone', message: 'chat', schedule: 'calendar', lunch: 'bowl', omok: 'go', bb: 'ball', bp: 'blocks' };
+    const KIND_IC = { notice: 'megaphone', message: 'chat', schedule: 'calendar', lunch: 'bowl', omok: 'go', bb: 'ball', bp: 'blocks', tv: 'map' };
     function paintBell() {
       const n = notifs.unread().length, badge = $('#bellBadge');
       badge.hidden = !n; badge.textContent = n > 9 ? '9+' : String(n);
@@ -1373,6 +1469,8 @@
       if (bbb) { bbb.hidden = !bc; bbb.textContent = String(bc); bbb.title = bc ? `숫자야구: 받은 신청·내 차례 ${bc}개` : ''; }
       const pc = bpApi.attention(), pbb = $('#navBp');
       if (pbb) { pbb.hidden = !pc; pbb.textContent = String(pc); pbb.title = pc ? `블록 퍼즐: 초대·진행 중 ${pc}개` : ''; }
+      const tc = tvApi.attention(), tbb = $('#navTv');
+      if (tbb) { tbb.hidden = !tc; tbb.textContent = String(tc); tbb.title = tc ? `전국 일주: 초대·내 차례 ${tc}개` : ''; }
       const gc = messages.unreadFrom('group'), gb = $('#groupBadge');
       gb.hidden = !gc; gb.textContent = gc > 9 ? '9+' : String(gc);
       if (!np.hidden) paintPanel();
@@ -1400,7 +1498,7 @@
       const list = notifs.list(), fresh = list.filter(x => !known.has(x.id) && x.at > Date.now() - 60000);
       known = new Set(list.map(x => x.id));
       const to = new URLSearchParams(location.search).get('to');
-      const quiet = (x) => !document.hidden && ((page === 'messages' && x.kind === 'message' && (to === x.who && x.id.startsWith('d:') || to === 'group' && x.id.startsWith('g:'))) || (page === 'lunch' && x.kind === 'lunch') || (page === 'omok' && x.kind === 'omok' && x.id.split(':')[1] === new URLSearchParams(location.search).get('g')) || (page === 'baseball' && x.kind === 'bb' && x.id.split(':')[1] === new URLSearchParams(location.search).get('g')) || (page === 'blocks' && x.kind === 'bp' && x.id.split(':')[1] === new URLSearchParams(location.search).get('r')));
+      const quiet = (x) => !document.hidden && ((page === 'messages' && x.kind === 'message' && (to === x.who && x.id.startsWith('d:') || to === 'group' && x.id.startsWith('g:'))) || (page === 'lunch' && x.kind === 'lunch') || (page === 'omok' && x.kind === 'omok' && x.id.split(':')[1] === new URLSearchParams(location.search).get('g')) || (page === 'baseball' && x.kind === 'bb' && x.id.split(':')[1] === new URLSearchParams(location.search).get('g')) || (page === 'blocks' && x.kind === 'bp' && x.id.split(':')[1] === new URLSearchParams(location.search).get('r')) || (page === 'travel' && x.kind === 'tv' && x.id.split(':')[1] === new URLSearchParams(location.search).get('g')));
       const loud = fresh.filter(x => !quiet(x));
       if (loud.length) {
         toast(`🔔 ${loud[0].text}${loud[0].kind === 'lunch' ? ' · ' + loud[0].sub : ''}${loud.length > 1 ? ` 외 ${loud.length - 1}개` : ''}`);
@@ -1408,7 +1506,7 @@
       }
       paintBell();
     }
-    ['hub:notices', 'hub:messages', 'hub:schedules', 'hub:lunch', 'hub:team', 'hub:omok', 'hub:bb', 'hub:bp'].forEach(ev => document.addEventListener(ev, onData));
+    ['hub:notices', 'hub:messages', 'hub:schedules', 'hub:lunch', 'hub:team', 'hub:omok', 'hub:bb', 'hub:bp', 'hub:tv'].forEach(ev => document.addEventListener(ev, onData));
     paintBell();
 
     backend.startLive();
@@ -1418,5 +1516,5 @@
   // 페이지 시작: 데이터 준비 → 입장 확인 → 페이지 코드
   function boot(fn) { ready.then(() => { if (requireMe()) fn(); }); }
 
-  window.Hub = { TEAM, $, esc, icon, store, sess, activity, team, notices, messages, schedules, lunch, omok, bb, bp, notifs, openNoticeEditor, openScheduleEditor, openInvite, openAvatarEditor, TAGS, ST, member, shortName, avatar, avatars, ymd, parseYmd, addDays, weekStart, todayYmd, dayLabel, shortDate, rangeLabel, ago, DOW, pad, toast, renderShell, setTheme, isLight, requireMe, inviteUrl, copyText, ready, boot, isShared, showInitError, get initError() { return initError; }, get mode() { return backend ? backend.mode : null; } };
+  window.Hub = { TEAM, $, esc, icon, store, sess, activity, team, notices, messages, schedules, lunch, omok, bb, bp, tv, notifs, openNoticeEditor, openScheduleEditor, openInvite, openAvatarEditor, TAGS, ST, member, shortName, avatar, avatars, ymd, parseYmd, addDays, weekStart, todayYmd, dayLabel, shortDate, rangeLabel, ago, DOW, pad, toast, renderShell, setTheme, isLight, requireMe, inviteUrl, copyText, ready, boot, isShared, showInitError, get initError() { return initError; }, get mode() { return backend ? backend.mode : null; } };
 })();

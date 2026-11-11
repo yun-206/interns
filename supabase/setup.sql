@@ -348,6 +348,7 @@ begin
     delete from storage.objects where bucket_id = 'chat-files';
   exception when others then null;
   end;
+  delete from public.tv_games       where true;
   delete from public.bp_rooms       where true;
   delete from public.bb_games       where true;
   delete from public.omok_games     where true;
@@ -805,11 +806,180 @@ grant execute on function public.bp_leave(uuid)                    to authentica
 grant execute on function public.bp_start(uuid)                    to authenticated;
 grant execute on function public.bp_report(uuid, int, int, boolean) to authenticated;
 
+-- 5-5) 미니게임: 전국 일주 보드게임 (v10) ----------------------------------
+-- 28칸 국내 여행지 보드. 개인전(2~4명) 또는 2:2 팀전(4명, 자리 0·2 vs 1·3).
+-- 판정 방식: 주사위는 시작할 때 서버가 정한 seed로 미리 정해짐(다시 굴리기 불가).
+--   땅·통행료·카드 계산은 지금 차례인 사람의 브라우저가 하고 결과(state)를 저장(tv_commit).
+--   서버는 '차례가 맞는지', '동시에 두 번 저장 안 되는지(ver)', '크기'만 확인 — 동기끼리라 돈 계산은 검증 안 함.
+create table if not exists public.tv_games (
+  id          uuid primary key default gen_random_uuid(),
+  host        uuid not null references public.members(id) on delete cascade,
+  mode        text not null default 'solo' check (mode in ('solo', 'team')),
+  rounds      int not null default 15 check (rounds in (10, 15, 20)),
+  invited     uuid[] not null default '{}',
+  joined      uuid[] not null default '{}',          -- 방장 포함 들어온 사람
+  partner     uuid,                                   -- 팀전: 방장과 같은 팀
+  players     uuid[] not null default '{}',          -- 시작할 때 정한 자리 순서
+  seed        bigint,
+  status      text not null default 'lobby' check (status in ('lobby', 'playing', 'done', 'canceled')),
+  turn        uuid,
+  ver         int not null default 0,
+  state       jsonb,
+  resigned    uuid[] not null default '{}',
+  winners     uuid[] not null default '{}',
+  end_reason  text check (end_reason in ('rounds', 'last', 'resign')),
+  started_at  timestamptz,
+  acted_at    timestamptz,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
+);
+create index if not exists tv_games_updated on public.tv_games (updated_at desc);
+alter table public.tv_games enable row level security;
+revoke all on public.tv_games from anon, authenticated;
+grant select on public.tv_games to authenticated;
+drop policy if exists "tv games read" on public.tv_games;
+create policy "tv games read" on public.tv_games for select to authenticated using (public.my_member_id() is not null);
+
+create or replace function public.tv_create(p_invited uuid[], p_mode text, p_rounds int, p_partner uuid)
+returns uuid language plpgsql security definer set search_path = public as $$
+declare me uuid := public.my_member_id(); inv uuid[]; n int; gid uuid;
+begin
+  if me is null then raise exception 'not_member'; end if;
+  select coalesce(array_agg(distinct m.id), '{}') into inv from public.members m where m.id = any(p_invited) and m.id <> me;
+  n := coalesce(array_length(inv, 1), 0);
+  if p_mode not in ('solo', 'team') then raise exception 'bad_mode'; end if;
+  if p_rounds not in (10, 15, 20) then raise exception 'bad_rounds'; end if;
+  if (p_mode = 'solo' and (n < 1 or n > 3)) or (p_mode = 'team' and n <> 3) then raise exception 'bad_players'; end if;
+  if p_mode = 'team' and (p_partner is null or not (p_partner = any(inv))) then raise exception 'bad_partner'; end if;
+  insert into public.tv_games (host, mode, rounds, invited, joined, partner)
+    values (me, p_mode, p_rounds, inv, array[me], case when p_mode = 'team' then p_partner end) returning id into gid;
+  return gid;
+end $$;
+
+create or replace function public.tv_join(p_game uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare me uuid := public.my_member_id(); g public.tv_games;
+begin
+  select * into g from public.tv_games where id = p_game for update;
+  if g.id is null or g.status <> 'lobby' then raise exception 'not_lobby'; end if;
+  if me is null or not (me = any(g.invited)) then raise exception 'not_invited'; end if;
+  if not (me = any(g.joined)) then
+    update public.tv_games set joined = joined || me, updated_at = now() where id = p_game;
+  end if;
+end $$;
+
+-- 거절·나가기(초대받은 사람) / 방 닫기(방장)
+create or replace function public.tv_leave(p_game uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare me uuid := public.my_member_id(); g public.tv_games;
+begin
+  select * into g from public.tv_games where id = p_game for update;
+  if g.id is null or g.status <> 'lobby' then raise exception 'not_lobby'; end if;
+  if me is null or (me <> g.host and not (me = any(g.invited))) then raise exception 'not_invited'; end if;
+  if me = g.host then
+    update public.tv_games set status = 'canceled', updated_at = now() where id = p_game;
+  else
+    update public.tv_games set invited = array_remove(invited, me), joined = array_remove(joined, me), updated_at = now() where id = p_game;
+  end if;
+end $$;
+
+-- 시작: 개인전 2명 이상(안 들어온 사람은 빼고, 순서 랜덤) / 팀전 4명 다(방장·짝꿍이 0·2 자리)
+create or replace function public.tv_start(p_game uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare me uuid := public.my_member_id(); g public.tv_games; ps uuid[]; opp uuid[]; k int;
+begin
+  select * into g from public.tv_games where id = p_game for update;
+  if g.id is null or g.status <> 'lobby' then raise exception 'not_lobby'; end if;
+  if me is null or me <> g.host then raise exception 'not_host'; end if;
+  if g.mode = 'solo' then
+    if coalesce(array_length(g.joined, 1), 0) < 2 then raise exception 'need_players'; end if;
+    select array_agg(x order by random()) into ps from unnest(g.joined) x;
+  else
+    if coalesce(array_length(g.joined, 1), 0) <> 4 or not (g.partner = any(g.joined)) then raise exception 'need_players'; end if;
+    select array_agg(x order by random()) into opp from unnest(g.joined) x where x <> g.host and x <> g.partner;
+    ps := array[g.host, opp[1], g.partner, opp[2]];
+    k := floor(random() * 4)::int;                     -- 누가 먼저 할지 랜덤 (팀 번갈아 순서는 유지)
+    ps := ps[k + 1:4] || ps[1:k];
+  end if;
+  update public.tv_games set status = 'playing', players = ps, turn = ps[1], ver = 0, state = null,
+    seed = floor(random() * 2147483646)::bigint + 1, invited = array_remove(g.joined, g.host),
+    started_at = now(), acted_at = now(), updated_at = now() where id = p_game;
+end $$;
+
+create or replace function public.tv_finish(p_game uuid, p_winners uuid[], p_reason text)
+returns void language plpgsql security definer set search_path = public as $$
+declare g public.tv_games; w uuid;
+begin
+  update public.tv_games set status = 'done', winners = coalesce(p_winners, '{}'), end_reason = p_reason, updated_at = now()
+    where id = p_game returning * into g;
+  foreach w in array coalesce(p_winners, '{}') loop
+    insert into public.activity (who, what, place) values (w, '전국 일주에서 이겼어요',
+      case when g.mode = 'team' then '2:2 팀전' else array_length(g.players, 1) || '명 개인전' end
+      || case p_reason when 'resign' then ' · 상대 기권' when 'last' then ' · 끝까지 남음' else ' · 총자산 1등' end);
+  end loop;
+end $$;
+
+-- 한 차례 결과 저장. 지금 차례인 사람만(또는 그 사람이 기권했거나 3분 넘게 안 두면 다른 참가자가 대신 넘기기)
+create or replace function public.tv_commit(p_game uuid, p_ver int, p_state jsonb, p_turn uuid, p_done boolean, p_winners uuid[], p_reason text)
+returns void language plpgsql security definer set search_path = public as $$
+declare me uuid := public.my_member_id(); g public.tv_games; w uuid[];
+begin
+  select * into g from public.tv_games where id = p_game for update;
+  if g.id is null or g.status <> 'playing' then raise exception 'not_playing'; end if;
+  if me is null or not (me = any(g.players)) then raise exception 'not_player'; end if;
+  if p_ver is distinct from g.ver then raise exception 'stale'; end if;
+  if not (me = g.turn or g.turn = any(g.resigned) or g.acted_at < now() - interval '3 minutes') then raise exception 'not_your_turn'; end if;
+  if p_state is null or jsonb_typeof(p_state) <> 'object' or octet_length(p_state::text) > 40000 then raise exception 'bad_state'; end if;
+  if not coalesce(p_done, false) and not (p_turn = any(g.players)) then raise exception 'bad_state'; end if;
+  update public.tv_games set ver = ver + 1, state = p_state, turn = case when coalesce(p_done, false) then null else p_turn end,
+    acted_at = now(), updated_at = now() where id = p_game;
+  if coalesce(p_done, false) then
+    select coalesce(array_agg(x), '{}') into w from unnest(coalesce(p_winners, '{}')) x where x = any(g.players);
+    perform public.tv_finish(p_game, w, case when p_reason in ('rounds', 'last') then p_reason else 'rounds' end);
+  end if;
+end $$;
+
+-- 기권: 남은 사람(팀)이 한 쪽뿐이면 바로 끝
+create or replace function public.tv_resign(p_game uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare me uuid := public.my_member_id(); g public.tv_games; act int[]; w uuid[];
+begin
+  select * into g from public.tv_games where id = p_game for update;
+  if g.id is null or g.status <> 'playing' then raise exception 'not_playing'; end if;
+  if me is null or not (me = any(g.players)) then raise exception 'not_player'; end if;
+  if me = any(g.resigned) then return; end if;
+  g.resigned := g.resigned || me;
+  update public.tv_games set resigned = g.resigned, updated_at = now() where id = p_game;
+  -- 아직 남은 자리(기권·파산 안 한 사람)
+  select coalesce(array_agg(i), '{}') into act from generate_subscripts(g.players, 1) i
+    where not (g.players[i] = any(g.resigned)) and not (coalesce(g.state -> 'out', '[]'::jsonb) ? g.players[i]::text);
+  if g.mode = 'solo' and coalesce(array_length(act, 1), 0) <= 1 then
+    perform public.tv_finish(p_game, array(select g.players[i] from unnest(act) i), 'resign');
+  elsif g.mode = 'team' and (select count(distinct i % 2) from unnest(act) i) <= 1 then
+    select coalesce(array_agg(g.players[i]), '{}') into w from generate_subscripts(g.players, 1) i
+      where coalesce(array_length(act, 1), 0) > 0 and i % 2 = act[1] % 2;
+    perform public.tv_finish(p_game, w, 'resign');
+  end if;
+end $$;
+revoke all on function public.tv_create(uuid[], text, int, uuid)  from public;
+revoke all on function public.tv_join(uuid)                       from public;
+revoke all on function public.tv_leave(uuid)                      from public;
+revoke all on function public.tv_start(uuid)                      from public;
+revoke all on function public.tv_finish(uuid, uuid[], text)       from public;
+revoke all on function public.tv_commit(uuid, int, jsonb, uuid, boolean, uuid[], text) from public;
+revoke all on function public.tv_resign(uuid)                     from public;
+grant execute on function public.tv_create(uuid[], text, int, uuid) to authenticated;
+grant execute on function public.tv_join(uuid)                      to authenticated;
+grant execute on function public.tv_leave(uuid)                     to authenticated;
+grant execute on function public.tv_start(uuid)                     to authenticated;
+grant execute on function public.tv_commit(uuid, int, jsonb, uuid, boolean, uuid[], text) to authenticated;
+grant execute on function public.tv_resign(uuid)                    to authenticated;
+
 -- 6) 실시간: 표가 바뀌면 열려 있는 화면에 알림 (RLS에 맞게 각자 볼 수 있는 것만) ----
 do $$
 declare t text;
 begin
-  foreach t in array array['members', 'notices', 'messages', 'chat_reads', 'schedules', 'schedule_kinds', 'lunch_picks', 'activity', 'omok_games', 'bb_games', 'bp_rooms', 'bp_players'] loop
+  foreach t in array array['members', 'notices', 'messages', 'chat_reads', 'schedules', 'schedule_kinds', 'lunch_picks', 'activity', 'omok_games', 'bb_games', 'bp_rooms', 'bp_players', 'tv_games'] loop
     if not exists (
       select 1 from pg_publication_tables
       where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = t
