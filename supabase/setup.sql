@@ -323,6 +323,7 @@ begin
     delete from storage.objects where bucket_id = 'chat-files';
   exception when others then null;
   end;
+  delete from public.bp_rooms       where true;
   delete from public.bb_games       where true;
   delete from public.omok_games     where true;
   delete from public.lunch_picks    where true;
@@ -641,11 +642,147 @@ grant execute on function public.bb_set_secret(uuid, text)  to authenticated;
 grant execute on function public.bb_guess(uuid, text)       to authenticated;
 grant execute on function public.bb_resign(uuid)            to authenticated;
 
+-- 5-4) 미니게임: 블록 퍼즐 대결 (v8) -------------------------------------
+-- 10×10 판에 블록 3개씩 놓고 가로·세로 줄을 채우면 지워짐. 대결은 2~4명이 같은 블록 순서(seed)로
+-- 동시에 시작해서 목표 점수에 먼저 닿는 사람이 승. 모두 더 못 놓게 되면 최고 점수가 승.
+-- 점수는 각자 브라우저가 보고(bp_report) — 동기끼리라 점수 검증은 안 함(늘어나기만 하게만 막음).
+create table if not exists public.bp_rooms (
+  id          uuid primary key default gen_random_uuid(),
+  host        uuid not null references public.members(id) on delete cascade,
+  invited     uuid[] not null default '{}',
+  target      int not null default 1000 check (target between 100 and 20000),
+  seed        bigint,
+  status      text not null default 'lobby' check (status in ('lobby', 'playing', 'done', 'canceled')),
+  winner      uuid references public.members(id) on delete set null,
+  end_reason  text check (end_reason in ('target', 'best', 'draw')),
+  started_at  timestamptz,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
+);
+create index if not exists bp_rooms_updated on public.bp_rooms (updated_at desc);
+create table if not exists public.bp_players (
+  room        uuid not null references public.bp_rooms(id) on delete cascade,
+  member      uuid not null references public.members(id) on delete cascade,
+  score       int not null default 0 check (score >= 0),
+  lines       int not null default 0 check (lines >= 0),
+  over        boolean not null default false,
+  joined_at   timestamptz not null default now(),
+  updated_at  timestamptz not null default now(),
+  primary key (room, member)
+);
+alter table public.bp_rooms   enable row level security;
+alter table public.bp_players enable row level security;
+revoke all on public.bp_rooms, public.bp_players from anon, authenticated;
+grant select on public.bp_rooms, public.bp_players to authenticated;
+drop policy if exists "bp rooms read"   on public.bp_rooms;
+drop policy if exists "bp players read" on public.bp_players;
+create policy "bp rooms read"   on public.bp_rooms   for select to authenticated using (public.my_member_id() is not null);
+create policy "bp players read" on public.bp_players for select to authenticated using (public.my_member_id() is not null);
+
+create or replace function public.bp_create(p_invited uuid[], p_target int)
+returns uuid language plpgsql security definer set search_path = public as $$
+declare me uuid := public.my_member_id(); inv uuid[]; rid uuid;
+begin
+  if me is null then raise exception 'not_member'; end if;
+  select coalesce(array_agg(distinct m.id), '{}') into inv from public.members m where m.id = any(p_invited) and m.id <> me;
+  if array_length(inv, 1) is null or array_length(inv, 1) > 3 then raise exception 'bad_players'; end if;
+  if p_target not in (500, 1000, 2000, 3000) then raise exception 'bad_target'; end if;
+  insert into public.bp_rooms (host, invited, target) values (me, inv, p_target) returning id into rid;
+  insert into public.bp_players (room, member) values (rid, me);
+  return rid;
+end $$;
+
+create or replace function public.bp_join(p_room uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare me uuid := public.my_member_id(); r public.bp_rooms;
+begin
+  select * into r from public.bp_rooms where id = p_room for update;
+  if r.id is null or r.status <> 'lobby' then raise exception 'not_lobby'; end if;
+  if me is null or not (me = any(r.invited)) then raise exception 'not_invited'; end if;
+  insert into public.bp_players (room, member) values (p_room, me) on conflict do nothing;
+  update public.bp_rooms set updated_at = now() where id = p_room;
+end $$;
+
+-- 거절(초대받은 사람) · 나가기(들어온 사람) · 방장이 나가면 방 취소
+create or replace function public.bp_leave(p_room uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare me uuid := public.my_member_id(); r public.bp_rooms;
+begin
+  select * into r from public.bp_rooms where id = p_room for update;
+  if r.id is null or r.status <> 'lobby' then raise exception 'not_lobby'; end if;
+  if me is null or (me <> r.host and not (me = any(r.invited))) then raise exception 'not_invited'; end if;
+  if me = r.host then
+    update public.bp_rooms set status = 'canceled', updated_at = now() where id = p_room;
+  else
+    delete from public.bp_players where room = p_room and member = me;
+    update public.bp_rooms set invited = array_remove(invited, me), updated_at = now() where id = p_room;
+  end if;
+end $$;
+
+create or replace function public.bp_start(p_room uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare me uuid := public.my_member_id(); r public.bp_rooms; n int;
+begin
+  select * into r from public.bp_rooms where id = p_room for update;
+  if r.id is null or r.status <> 'lobby' then raise exception 'not_lobby'; end if;
+  if me is null or me <> r.host then raise exception 'not_host'; end if;
+  select count(*) into n from public.bp_players where room = p_room;
+  if n < 2 then raise exception 'need_players'; end if;
+  -- 아직 안 들어온 사람은 빼고 시작
+  update public.bp_rooms set status = 'playing', seed = floor(random() * 2147483646)::bigint + 1,
+    invited = array(select member from public.bp_players where room = p_room and member <> r.host),
+    started_at = now(), updated_at = now() where id = p_room;
+end $$;
+
+create or replace function public.bp_end(p_room uuid, p_winner uuid, p_reason text)
+returns void language plpgsql security definer set search_path = public as $$
+declare r public.bp_rooms; sc int;
+begin
+  update public.bp_rooms set status = 'done', winner = p_winner, end_reason = p_reason, updated_at = now() where id = p_room returning * into r;
+  if p_winner is not null then
+    select score into sc from public.bp_players where room = p_room and member = p_winner;
+    insert into public.activity (who, what, place) values (p_winner, '블록 퍼즐 대결에서 이겼어요', sc || '점' || case when p_reason = 'target' then ' · 목표 ' || r.target || '점 먼저 도착' else ' · 최고 점수' end);
+  end if;
+end $$;
+
+-- 내 점수 보고. 목표에 먼저 닿으면 승, 모두 끝나면 최고 점수가 승
+create or replace function public.bp_report(p_room uuid, p_score int, p_lines int, p_over boolean)
+returns void language plpgsql security definer set search_path = public as $$
+declare me uuid := public.my_member_id(); r public.bp_rooms; p public.bp_players; best int; nbest int; who uuid;
+begin
+  select * into r from public.bp_rooms where id = p_room for update;
+  if r.id is null or r.status <> 'playing' then raise exception 'not_playing'; end if;
+  select * into p from public.bp_players where room = p_room and member = me for update;
+  if p.room is null then raise exception 'not_player'; end if;
+  if p.over then return; end if;
+  update public.bp_players set score = greatest(score, coalesce(p_score, 0)), lines = greatest(lines, coalesce(p_lines, 0)),
+    over = coalesce(p_over, false), updated_at = now() where room = p_room and member = me;
+  if greatest(p.score, coalesce(p_score, 0)) >= r.target then
+    perform public.bp_end(p_room, me, 'target');
+  elsif not exists (select 1 from public.bp_players where room = p_room and not over) then
+    select max(score) into best from public.bp_players where room = p_room;
+    select count(*), min(member::text)::uuid into nbest, who from public.bp_players where room = p_room and score = best;
+    if nbest = 1 then perform public.bp_end(p_room, who, 'best'); else perform public.bp_end(p_room, null, 'draw'); end if;
+  end if;
+end $$;
+
+revoke all on function public.bp_create(uuid[], int)            from public;
+revoke all on function public.bp_join(uuid)                     from public;
+revoke all on function public.bp_leave(uuid)                    from public;
+revoke all on function public.bp_start(uuid)                    from public;
+revoke all on function public.bp_end(uuid, uuid, text)          from public;
+revoke all on function public.bp_report(uuid, int, int, boolean) from public;
+grant execute on function public.bp_create(uuid[], int)            to authenticated;
+grant execute on function public.bp_join(uuid)                     to authenticated;
+grant execute on function public.bp_leave(uuid)                    to authenticated;
+grant execute on function public.bp_start(uuid)                    to authenticated;
+grant execute on function public.bp_report(uuid, int, int, boolean) to authenticated;
+
 -- 6) 실시간: 표가 바뀌면 열려 있는 화면에 알림 (RLS에 맞게 각자 볼 수 있는 것만) ----
 do $$
 declare t text;
 begin
-  foreach t in array array['members', 'notices', 'messages', 'chat_reads', 'schedules', 'schedule_kinds', 'lunch_picks', 'activity', 'omok_games', 'bb_games'] loop
+  foreach t in array array['members', 'notices', 'messages', 'chat_reads', 'schedules', 'schedule_kinds', 'lunch_picks', 'activity', 'omok_games', 'bb_games', 'bp_rooms', 'bp_players'] loop
     if not exists (
       select 1 from pg_publication_tables
       where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = t

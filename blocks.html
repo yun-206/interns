@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>블록 퍼즐 · interns</title>
+  <meta name="description" content="10×10 판에 블록을 놓아 줄을 지우는 블록 퍼즐.">
+  <meta name="theme-color" content="#121212">
+  <script>
+    try { if (localStorage.getItem('interns-theme') === 'light') document.documentElement.setAttribute('data-theme', 'light'); } catch (e) {}
+  </script>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%2301539f'/%3E%3Cpath d='M7 15h18a9 9 0 0 1-18 0z' fill='white'/%3E%3Cpath d='M13 7c0 2 1.5 2 1.5 4M18 7c0 2 1.5 2 1.5 4' stroke='white' stroke-width='2' stroke-linecap='round' fill='none'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+  <link rel="stylesheet" href="css/hub.css">
+  <script src="data/team.js" defer></script>
+  <script src="js/hub-core.js" defer></script>
+  <script src="js/blocks.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">본문으로 건너뛰기</a>
+  <div class="shell">
+    <aside class="side" id="side" aria-label="사이드바"></aside>
+    <div class="scrim" id="scrim" aria-hidden="true"></div>
+    <div class="main-col">
+      <header class="top" id="top"></header>
+      <main class="page" id="main" tabindex="-1">
+        <a class="back" href="index.html"><span data-ic="back"></span>홈으로</a>
+        <div class="page__head">
+          <div>
+            <h1 class="page__title">블록 퍼즐</h1>
+            <p class="page__sub">블록 3개를 10×10 판에 놓아요. 가로·세로 한 줄을 다 채우면 지워지고, 더 놓을 곳이 없으면 끝. 대결은 같은 블록 순서로 목표 점수에 먼저 닿는 사람이 이겨요.</p>
+          </div>
+        </div>
+        <div class="omok bpz">
+          <section class="card omok__main bpmain" aria-label="블록 퍼즐">
+            <div class="bpscore" id="bpscore"></div>
+            <div class="bprace" id="bprace" hidden></div>
+            <div class="bpwrap">
+              <div class="bpboard" id="bpboard" role="grid" aria-label="10×10 판 · 블록을 고른 뒤 방향키로 자리를 옮기고 Enter로 놓아요"></div>
+              <div class="oover" id="bpover" hidden></div>
+            </div>
+            <div class="bptray" id="bptray" role="group" aria-label="놓을 블록 3개 (1·2·3 키로 고르기)"></div>
+            <p class="sr" id="bplive" aria-live="polite"></p>
+          </section>
+          <div class="omok__side">
+            <div class="seg omode" role="radiogroup" aria-label="모드">
+              <label><input type="radio" name="pmode" value="solo"><span>혼자</span></label>
+              <label><input type="radio" name="pmode" value="pvp"><span>대결</span><em class="pill pill--count" id="bpPvpBadge" hidden></em></label>
+            </div>
+            <section class="card" id="bpSolo" aria-label="혼자 하기"></section>
+            <div class="pvp" id="bpPvp" hidden></div>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+</body>
+</html>

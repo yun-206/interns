@@ -62,6 +62,7 @@
     undo: '<path d="M9 14L4.5 9.5 9 5"/><path d="M4.5 9.5H14a5.5 5.5 0 0 1 0 11h-3"/>',
     cpu: '<rect x="6" y="6" width="12" height="12" rx="2.5"/><path d="M9.5 3v3M14.5 3v3M9.5 18v3M14.5 18v3M3 9.5h3M3 14.5h3M18 9.5h3M18 14.5h3"/>',
     trophy: '<path d="M8 4.5h8v4a4 4 0 0 1-8 0z"/><path d="M8 6H5a3 3 0 0 0 3 3.5M16 6h3a3 3 0 0 1-3 3.5M12 12.5V16M8.5 20h7M10 16h4v4h-4z"/>',
+    blocks: '<rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5" fill="currentColor"/>',
     ball: '<circle cx="12" cy="12" r="8.5"/><path d="M7.2 5.2c1.6 1.8 2.5 4.2 2.5 6.8s-.9 5-2.5 6.8M16.8 5.2c-1.6 1.8-2.5 4.2-2.5 6.8s.9 5 2.5 6.8"/>',
     plane: '<path d="M3 13.5l7-1.5 4.5-7.5a1.6 1.6 0 0 1 2.8 1.6L15.5 13l4 1.5.9 2.5-5.4-.6-2.7 4.1-2 .3.7-4.9-5-1.1z"/>',
   };
@@ -81,7 +82,7 @@
   const store = makeStore('localStorage');
   const sess = makeStore('sessionStorage');
   const PFX = 'interns-';
-  const K = { members: PFX + 'members', me: PFX + 'me', activity: PFX + 'activity', pres: PFX + 'p:', myStatus: PFX + 'mystatus', notices: PFX + 'notices', messages: PFX + 'messages', reads: PFX + 'reads', schedules: PFX + 'schedules', kinds: PFX + 'kinds', lunch: PFX + 'lunch', omok: PFX + 'omok', bb: PFX + 'bb', bbSec: PFX + 'bbsec', seen: PFX + 'seen:' };
+  const K = { members: PFX + 'members', me: PFX + 'me', activity: PFX + 'activity', pres: PFX + 'p:', myStatus: PFX + 'mystatus', notices: PFX + 'notices', messages: PFX + 'messages', reads: PFX + 'reads', schedules: PFX + 'schedules', kinds: PFX + 'kinds', lunch: PFX + 'lunch', omok: PFX + 'omok', bb: PFX + 'bb', bbSec: PFX + 'bbsec', bpRooms: PFX + 'bprooms', bpPlayers: PFX + 'bpplayers', seen: PFX + 'seen:' };
 
   /* ---------- 날짜 ---------- */
   const pad = (n) => String(n).padStart(2, '0');
@@ -113,7 +114,7 @@
   /* =========================================================
      데이터 캐시 — 화면은 항상 여기서 읽고(동기), 쓰기는 백엔드로(비동기)
      ========================================================= */
-  const state = { members: [], activity: [], notices: [], messages: [], reads: {}, schedules: [], kinds: [], lunch: [], omok: [], bb: [], bbSec: {}, online: {}, lastSeen: {}, meId: null };
+  const state = { members: [], activity: [], notices: [], messages: [], reads: {}, schedules: [], kinds: [], lunch: [], omok: [], bb: [], bbSec: {}, bpRooms: [], bpPlayers: [], online: {}, lastSeen: {}, meId: null };
   const byAtDesc = (a, b) => b.at - a.at;
   const byAt = (a, b) => a.at - b.at;
   const bySched = (a, b) => (a.start + a.at).localeCompare(b.start + b.at);
@@ -191,6 +192,7 @@
       state.kinds = arr(K.kinds);
       state.omok = arr(K.omok);
       state.bb = arr(K.bb); state.bbSec = store.get(K.bbSec, {}) || {};
+      state.bpRooms = arr(K.bpRooms); state.bpPlayers = arr(K.bpPlayers);
       state.lunch = arr(K.lunch).slice().sort(byAtDesc);
     },
     meId() { const id = sess.get(K.me, null) || store.get(K.me, null); return id && state.members.some(m => m.id === id) ? id : null; },
@@ -284,6 +286,38 @@
       this._bsave();
     },
     async bbResign(id) { const me = this.meId(), g = this._bg(id); if (!['setup', 'playing'].includes(g.status)) throw new Error('not_playing'); if (me !== g.p1 && me !== g.p2) throw new Error('not_yours'); this._bend(g, me === g.p1 ? g.p2 : g.p1, 'resign'); this._bsave(); },
+    _br(id) { const r = state.bpRooms.find(x => x.id === id); if (!r) throw new Error('not_found'); return r; },
+    _bpsave() { state.bpRooms.sort((a, b) => b.upd - a.upd); state.bpRooms = state.bpRooms.slice(0, 40); const ids = new Set(state.bpRooms.map(r => r.id)); state.bpPlayers = state.bpPlayers.filter(p => ids.has(p.room)); store.set(K.bpPlayers, state.bpPlayers); store.set(K.bpRooms, state.bpRooms); },
+    _bpend(r, winner, reason) {
+      Object.assign(r, { status: 'done', winner, reason, upd: Date.now() });
+      if (winner) { const p = state.bpPlayers.find(x => x.room === r.id && x.member === winner); this.addActivity({ who: winner, what: '블록 퍼즐 대결에서 이겼어요', where: `${p ? p.score : 0}점${reason === 'target' ? ` · 목표 ${r.target}점 먼저 도착` : ' · 최고 점수'}`, at: Date.now() }); }
+    },
+    async bpCreate(inv, target) {
+      const me = this.meId(); inv = [...new Set(inv)].filter(id => id !== me && state.members.some(m => m.id === id));
+      if (!inv.length || inv.length > 3) throw new Error('bad_players'); if (![500, 1000, 2000, 3000].includes(target)) throw new Error('bad_target');
+      const r = { id: newId('p'), host: me, invited: inv, target, seed: null, status: 'lobby', winner: null, reason: null, started: 0, at: Date.now(), upd: Date.now() };
+      state.bpRooms.unshift(r); state.bpPlayers.push({ room: r.id, member: me, score: 0, lines: 0, over: false, joined: Date.now(), upd: Date.now() }); this._bpsave(); return r.id;
+    },
+    async bpJoin(id) { const me = this.meId(), r = this._br(id); if (r.status !== 'lobby') throw new Error('not_lobby'); if (!r.invited.includes(me)) throw new Error('not_invited'); if (!state.bpPlayers.some(p => p.room === id && p.member === me)) state.bpPlayers.push({ room: id, member: me, score: 0, lines: 0, over: false, joined: Date.now(), upd: Date.now() }); r.upd = Date.now(); this._bpsave(); },
+    async bpLeave(id) {
+      const me = this.meId(), r = this._br(id); if (r.status !== 'lobby') throw new Error('not_lobby'); if (me !== r.host && !r.invited.includes(me)) throw new Error('not_invited');
+      if (me === r.host) r.status = 'canceled'; else { state.bpPlayers = state.bpPlayers.filter(p => !(p.room === id && p.member === me)); r.invited = r.invited.filter(x => x !== me); }
+      r.upd = Date.now(); this._bpsave();
+    },
+    async bpStart(id) {
+      const me = this.meId(), r = this._br(id); if (r.status !== 'lobby') throw new Error('not_lobby'); if (me !== r.host) throw new Error('not_host');
+      const ps = state.bpPlayers.filter(p => p.room === id); if (ps.length < 2) throw new Error('need_players');
+      Object.assign(r, { status: 'playing', seed: 1 + Math.floor(Math.random() * 2147483646), invited: ps.map(p => p.member).filter(x => x !== r.host), started: Date.now(), upd: Date.now() }); this._bpsave();
+    },
+    async bpReport(id, score, lines, over) {
+      const me = this.meId(), r = this._br(id); if (r.status !== 'playing') throw new Error('not_playing');
+      const p = state.bpPlayers.find(x => x.room === id && x.member === me); if (!p) throw new Error('not_player'); if (p.over) return;
+      Object.assign(p, { score: Math.max(p.score, score | 0), lines: Math.max(p.lines, lines | 0), over: !!over, upd: Date.now() }); r.upd = Date.now();
+      const ps = state.bpPlayers.filter(x => x.room === id);
+      if (p.score >= r.target) this._bpend(r, me, 'target');
+      else if (ps.every(x => x.over)) { const best = Math.max(...ps.map(x => x.score)), top = ps.filter(x => x.score === best); this._bpend(r, top.length === 1 ? top[0].member : null, top.length === 1 ? 'best' : 'draw'); }
+      this._bpsave();
+    },
     async omokResign(id) { const me = this.meId(), g = this._og(id); if (g.status !== 'playing') throw new Error('not_playing'); if (![g.black, g.white].includes(me)) throw new Error('not_yours'); this._oend(g, me === g.black ? g.white : g.black, 'resign'); this._osave(); },
     async resetAll(pw) {
       if (!(await this.checkPassword(pw))) throw new Error('wrong_password');
@@ -314,6 +348,7 @@
         if (!k || k === K.lunch) emit('hub:lunch');
         if (!k || k === K.omok) emit('hub:omok');
         if (!k || k === K.bb || k === K.bbSec) emit('hub:bb');
+        if (!k || k === K.bpRooms || k === K.bpPlayers) emit('hub:bp');
       });
     },
   };
@@ -329,6 +364,8 @@
   const fromSchedule = (r) => ({ id: r.id, member: r.member, kind: r.kind, start: r.start_date, end: r.end_date, memo: r.memo || '', at: Date.parse(r.created_at) || 0, edited: Date.parse(r.updated_at) || 0 });
   const fromOmok = (r) => ({ id: r.id, black: r.black, white: r.white, by: r.created_by, status: r.status, moves: (r.moves || []).map(Number), winner: r.winner || null, reason: r.end_reason || null, at: Date.parse(r.created_at) || 0, upd: Date.parse(r.updated_at) || 0 });
   const fromBb = (r) => ({ id: r.id, p1: r.p1, p2: r.p2, digits: r.digits, status: r.status, ready1: !!r.ready1, ready2: !!r.ready2, guesses: Array.isArray(r.guesses) ? r.guesses : [], solved1: !!r.solved1, winner: r.winner || null, reason: r.end_reason || null, at: Date.parse(r.created_at) || 0, upd: Date.parse(r.updated_at) || 0 });
+  const fromBpRoom = (r) => ({ id: r.id, host: r.host, invited: r.invited || [], target: r.target, seed: r.seed == null ? null : Number(r.seed), status: r.status, winner: r.winner || null, reason: r.end_reason || null, started: Date.parse(r.started_at) || 0, at: Date.parse(r.created_at) || 0, upd: Date.parse(r.updated_at) || 0 });
+  const fromBpPlayer = (r) => ({ room: r.room, member: r.member, score: r.score, lines: r.lines, over: !!r.over, joined: Date.parse(r.joined_at) || 0, upd: Date.parse(r.updated_at) || 0 });
   const fromLunch = (r) => ({ id: r.id, by: r.picked_by, mode: r.mode, candidates: r.candidates || [], result: r.result, at: Date.parse(r.created_at) || 0 });
   function check(res) { if (res.error) throw res.error; return res.data; }
   const errMsg = (e) => String((e && (e.message || e.msg)) || e || '');
@@ -347,6 +384,12 @@
     async loadMessages() { state.messages = check(await sb.from('messages').select('*').order('created_at', { ascending: false }).limit(800)).map(fromMessage).sort(byAt); },   // DB가 내가 볼 수 있는 것만 줌
     async loadReads() { const r = {}; check(await sb.from('chat_reads').select('*')).forEach(x => { r[x.member] = Date.parse(x.read_at) || 0; }); state.reads = r; },
     async loadSchedules() { const from = ymd(addDays(new Date(), -100)); state.schedules = check(await sb.from('schedules').select('*').gte('end_date', from).order('start_date')).map(fromSchedule).sort(bySched); },
+    async loadBp() {
+      const rs = check(await sb.from('bp_rooms').select('*').order('updated_at', { ascending: false }).limit(40)).map(fromBpRoom);
+      const ids = rs.map(r => r.id);
+      state.bpPlayers = ids.length ? check(await sb.from('bp_players').select('*').in('room', ids)).map(fromBpPlayer) : [];
+      state.bpRooms = rs;
+    },
     async loadBb() {
       const [gs, ss] = await Promise.all([sb.from('bb_games').select('*').order('updated_at', { ascending: false }).limit(60), sb.from('bb_secrets').select('*')]);
       state.bb = check(gs).map(fromBb);
@@ -361,7 +404,7 @@
       const me = check(await sb.rpc('whoami'));
       if (!me) { state.meId = null; return; }
       state.meId = me.id;
-      await Promise.all([this.loadMembers(), this.loadActivity(), this.loadNotices(), this.loadMessages(), this.loadReads(), this.loadSchedules(), this.loadKinds(), this.loadLunch(), this.loadOmok().catch(e => { console.warn('[interns] 오목 표가 없어요 — setup.sql을 다시 Run 해 주세요', e); state.omok = []; }), this.loadBb().catch(e => { console.warn('[interns] 숫자야구 표가 없어요 — setup.sql을 다시 Run 해 주세요', e); state.bb = []; state.bbSec = {}; })]);
+      await Promise.all([this.loadMembers(), this.loadActivity(), this.loadNotices(), this.loadMessages(), this.loadReads(), this.loadSchedules(), this.loadKinds(), this.loadLunch(), this.loadOmok().catch(e => { console.warn('[interns] 오목 표가 없어요 — setup.sql을 다시 Run 해 주세요', e); state.omok = []; }), this.loadBb().catch(e => { console.warn('[interns] 숫자야구 표가 없어요 — setup.sql을 다시 Run 해 주세요', e); state.bb = []; state.bbSec = {}; }), this.loadBp().catch(e => { console.warn('[interns] 블록 퍼즐 표가 없어요 — setup.sql을 다시 Run 해 주세요', e); state.bpRooms = []; state.bpPlayers = []; })]);
     },
     async checkPassword(pw) { return !!check(await sb.rpc('check_password', { p_password: pw })); },
     async memberNames(pw) { const r = await sb.rpc('member_names', { p_password: pw }); if (r.error) throw new Error(/wrong_password/.test(errMsg(r.error)) ? 'wrong_password' : errMsg(r.error)); return (r.data || []).map(x => typeof x === 'string' ? x : x.member_names); },
@@ -443,6 +486,16 @@
       if (r.error) { const m = errMsg(r.error).match(/not_invite|not_yours|not_playing|not_setup|not_your_turn|bad_number/); throw new Error(m ? m[0] : errMsg(r.error)); }
       await this.loadBb();
     },
+    async _prpc(fn, args) {
+      const r = await sb.rpc(fn, args);
+      if (r.error) { const m = errMsg(r.error).match(/not_lobby|not_invited|not_host|need_players|not_playing|not_player|bad_players|bad_target/); throw new Error(m ? m[0] : errMsg(r.error)); }
+      await this.loadBp(); return r.data;
+    },
+    async bpCreate(inv, target) { return this._prpc('bp_create', { p_invited: inv, p_target: target }); },
+    async bpJoin(id) { return this._prpc('bp_join', { p_room: id }); },
+    async bpLeave(id) { return this._prpc('bp_leave', { p_room: id }); },
+    async bpStart(id) { return this._prpc('bp_start', { p_room: id }); },
+    async bpReport(id, score, lines, over) { return this._prpc('bp_report', { p_room: id, p_score: score, p_lines: lines, p_over: over }); },
     async bbInvite(o) { const g = fromBb(check(await sb.from('bb_games').insert({ p1: o.p1, p2: o.p2, digits: o.digits }).select().single())); state.bb = [g].concat(state.bb.filter(x => x.id !== g.id)); return g; },
     async bbRespond(id, accept) { return this._brpc('bb_respond', { p_game: id, p_accept: accept }); },
     async bbCancel(id) { return this._brpc('bb_cancel', { p_game: id }); },
@@ -472,8 +525,8 @@
     startLive() {
       const id = state.meId;
       const t = {};
-      const loaders = { members: 'loadMembers', activity: 'loadActivity', notices: 'loadNotices', messages: 'loadMessages', chat_reads: 'loadReads', schedules: 'loadSchedules', schedule_kinds: 'loadKinds', lunch_picks: 'loadLunch', omok_games: 'loadOmok', bb_games: 'loadBb' };
-      const events = { members: ['hub:team'], activity: ['hub:activity'], notices: ['hub:notices'], messages: ['hub:messages'], chat_reads: ['hub:messages'], schedules: ['hub:schedules', 'hub:team'], schedule_kinds: ['hub:schedules', 'hub:team'], lunch_picks: ['hub:lunch'], omok_games: ['hub:omok'], bb_games: ['hub:bb'] };
+      const loaders = { members: 'loadMembers', activity: 'loadActivity', notices: 'loadNotices', messages: 'loadMessages', chat_reads: 'loadReads', schedules: 'loadSchedules', schedule_kinds: 'loadKinds', lunch_picks: 'loadLunch', omok_games: 'loadOmok', bb_games: 'loadBb', bp_rooms: 'loadBp', bp_players: 'loadBp' };
+      const events = { members: ['hub:team'], activity: ['hub:activity'], notices: ['hub:notices'], messages: ['hub:messages'], chat_reads: ['hub:messages'], schedules: ['hub:schedules', 'hub:team'], schedule_kinds: ['hub:schedules', 'hub:team'], lunch_picks: ['hub:lunch'], omok_games: ['hub:omok'], bb_games: ['hub:bb'], bp_rooms: ['hub:bp'], bp_players: ['hub:bp'] };
       const reload = (tb) => { clearTimeout(t[tb]); t[tb] = setTimeout(async () => {
         try {
           if (tb === 'members') {
@@ -505,7 +558,7 @@
     },
   };
 
-  function emitAll() { ['hub:team', 'hub:activity', 'hub:notices', 'hub:messages', 'hub:schedules', 'hub:lunch', 'hub:omok', 'hub:bb'].forEach(ev => emit(ev)); }
+  function emitAll() { ['hub:team', 'hub:activity', 'hub:notices', 'hub:messages', 'hub:schedules', 'hub:lunch', 'hub:omok', 'hub:bb', 'hub:bp'].forEach(ev => emit(ev)); }
   function netError(e) { console.warn('[interns]', e); toast('서버에 연결하지 못했어요 · 잠시 뒤 다시 시도해 주세요'); }
   function loadScript(src) {
     return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => rej(new Error('script_load_failed')); document.head.appendChild(s); });
@@ -702,9 +755,27 @@
 
   const bbApi = bb;
 
+  const bp = {
+    TARGETS: [500, 1000, 2000, 3000],
+    rooms() { return state.bpRooms.slice().sort((a, b) => b.upd - a.upd); },
+    get(id) { return state.bpRooms.find(r => r.id === id) || null; },
+    players(id) { return state.bpPlayers.filter(p => p.room === id).sort((a, b) => b.score - a.score || a.joined - b.joined); },
+    player(id, m) { m = m || team.meId(); return state.bpPlayers.find(p => p.room === id && p.member === m) || null; },
+    isPlayer(r, m) { return !!this.player(r.id, m); },
+    pendingFor(r, m) { m = m || team.meId(); return r.status === 'lobby' && r.invited.includes(m) && !this.isPlayer(r, m); },
+    invitesForMe() { return this.rooms().filter(r => this.pendingFor(r)); },
+    attention() { return this.invitesForMe().length + this.rooms().filter(r => r.status === 'playing' && this.isPlayer(r) && !this.player(r.id).over).length; },
+    async create(inv, target) { return backend.bpCreate(inv, target); },
+    async join(id) { return backend.bpJoin(id); },
+    async leave(id) { return backend.bpLeave(id); },
+    async start(id) { return backend.bpStart(id); },
+    async report(id, score, lines, over) { return backend.bpReport(id, score, lines, over); },
+  };
+  const bpApi = bp;   // renderShell 안에서 쓰는 이름
+
   // 알림: 남이 올린 공지 / 나한테 온 쪽지·단체방 / 남이 올린 일정 / 남이 뽑은 점심
   //  안 읽음 — 쪽지: 실제로 안 읽음 / 나머지: 종 패널(또는 그 화면)을 마지막으로 본 시각 이후
-  const SEEN_KINDS = ['notice', 'schedule', 'lunch', 'omok', 'bb'];
+  const SEEN_KINDS = ['notice', 'schedule', 'lunch', 'omok', 'bb', 'bp'];
   const notifs = {
     seenAt(kind) { const me = team.me(); if (!me) return Date.now(); const all = store.get(K.seen + me.id, null) || {}; return all[kind] || me.joinedAt || 0; },
     list() {
@@ -734,6 +805,12 @@
         else if (g.status === 'playing' && bb.myTurn(g) && last) out.push({ id: 'bt:' + g.id + ':' + g.guesses.length, kind: 'bb', who: op, at: g.upd, text: `${nm(op)} 님이 ${last.g} → ${BB.label(last, g.digits)} · 내 차례`, sub: g.solved1 && g.p2 === me ? '상대가 맞혔어요 · 마지막 기회!' : `숫자야구 ${nd}`, href });
         else if (g.status === 'playing' && bb.myTurn(g) && !last) out.push({ id: 'bt:' + g.id + ':0', kind: 'bb', who: op, at: g.upd, text: `숫자야구 시작 · 내가 먼저 맞혀요`, sub: `${nm(op)} 님과 ${nd}`, href });
         else if (g.status === 'done') out.push({ id: 'be:' + g.id, kind: 'bb', who: op, at: g.upd, text: !g.winner ? `${nm(op)} 님과 숫자야구 비겼어요` : g.winner === me ? `${nm(op)} 님과 숫자야구 이겼어요 🎉` : `${nm(op)} 님과 숫자야구 졌어요`, sub: g.reason === 'resign' ? (g.winner === me ? '상대가 기권했어요' : '기권했어요') : `${Math.ceil(g.guesses.length / 2)}번째에 끝`, href });
+      });
+      state.bpRooms.forEach(r => {
+        const href = 'blocks.html?r=' + r.id, mine = bp.isPlayer(r, me);
+        if (bp.pendingFor(r, me)) out.push({ id: 'pi:' + r.id, kind: 'bp', who: r.host, at: r.at, text: `${nm(r.host)} 님이 블록 퍼즐 대결에 불렀어요`, sub: `목표 ${r.target}점 먼저 · 눌러서 참가`, href });
+        else if (r.status === 'playing' && mine && r.host !== me) out.push({ id: 'ps:' + r.id, kind: 'bp', who: r.host, at: r.started || r.upd, text: '블록 퍼즐 대결이 시작됐어요!', sub: `목표 ${r.target}점 · ${bp.players(r.id).length}명`, href });
+        else if (r.status === 'done' && mine) { const p = bp.player(r.id, me); out.push({ id: 'pe:' + r.id, kind: 'bp', who: r.winner || r.host, at: r.upd, text: !r.winner ? '블록 퍼즐 대결 · 비겼어요' : r.winner === me ? '블록 퍼즐 대결 이겼어요 🎉' : `블록 퍼즐 대결 · ${nm(r.winner)} 님 승`, sub: `내 점수 ${p ? p.score : 0}점 · 목표 ${r.target}점`, href }); }
       });
       return out.sort(byAtDesc).slice(0, 30);
     },
@@ -1012,6 +1089,7 @@
           <p class="nav__label">미니게임</p>
           ${navItem('omok.html', 'go', '오목', page === 'omok', '<em class="pill pill--count" id="navOmok" hidden></em>')}
           ${navItem('baseball.html', 'ball', '숫자야구', page === 'baseball', '<em class="pill pill--count" id="navBb" hidden></em>')}
+          ${navItem('blocks.html', 'blocks', '블록 퍼즐', page === 'blocks', '<em class="pill pill--count" id="navBp" hidden></em>')}
         </div>
         ${TEAM.links.length ? `<div class="nav__group">
           <p class="nav__label">바로가기</p>
@@ -1097,7 +1175,7 @@
 
     // ---- 알림 패널 ----
     const bb = $('#bellBtn'), np = $('#notifPanel');
-    const KIND_IC = { notice: 'megaphone', message: 'chat', schedule: 'calendar', lunch: 'bowl', omok: 'go', bb: 'ball' };
+    const KIND_IC = { notice: 'megaphone', message: 'chat', schedule: 'calendar', lunch: 'bowl', omok: 'go', bb: 'ball', bp: 'blocks' };
     function paintBell() {
       const n = notifs.unread().length, badge = $('#bellBadge');
       badge.hidden = !n; badge.textContent = n > 9 ? '9+' : String(n);
@@ -1108,6 +1186,8 @@
       if (ob) { ob.hidden = !oc; ob.textContent = String(oc); ob.title = oc ? `오목: 받은 신청·내 차례 ${oc}개` : ''; }
       const bc = bbApi.attention(), bbb = $('#navBb');   // 이 안의 bb는 종 버튼이라 별칭 사용
       if (bbb) { bbb.hidden = !bc; bbb.textContent = String(bc); bbb.title = bc ? `숫자야구: 받은 신청·내 차례 ${bc}개` : ''; }
+      const pc = bpApi.attention(), pbb = $('#navBp');
+      if (pbb) { pbb.hidden = !pc; pbb.textContent = String(pc); pbb.title = pc ? `블록 퍼즐: 초대·진행 중 ${pc}개` : ''; }
       const gc = messages.unreadFrom('group'), gb = $('#groupBadge');
       gb.hidden = !gc; gb.textContent = gc > 9 ? '9+' : String(gc);
       if (!np.hidden) paintPanel();
@@ -1135,7 +1215,7 @@
       const list = notifs.list(), fresh = list.filter(x => !known.has(x.id) && x.at > Date.now() - 60000);
       known = new Set(list.map(x => x.id));
       const to = new URLSearchParams(location.search).get('to');
-      const quiet = (x) => !document.hidden && ((page === 'messages' && x.kind === 'message' && (to === x.who && x.id.startsWith('d:') || to === 'group' && x.id.startsWith('g:'))) || (page === 'lunch' && x.kind === 'lunch') || (page === 'omok' && x.kind === 'omok' && x.id.split(':')[1] === new URLSearchParams(location.search).get('g')) || (page === 'baseball' && x.kind === 'bb' && x.id.split(':')[1] === new URLSearchParams(location.search).get('g')));
+      const quiet = (x) => !document.hidden && ((page === 'messages' && x.kind === 'message' && (to === x.who && x.id.startsWith('d:') || to === 'group' && x.id.startsWith('g:'))) || (page === 'lunch' && x.kind === 'lunch') || (page === 'omok' && x.kind === 'omok' && x.id.split(':')[1] === new URLSearchParams(location.search).get('g')) || (page === 'baseball' && x.kind === 'bb' && x.id.split(':')[1] === new URLSearchParams(location.search).get('g')) || (page === 'blocks' && x.kind === 'bp' && x.id.split(':')[1] === new URLSearchParams(location.search).get('r')));
       const loud = fresh.filter(x => !quiet(x));
       if (loud.length) {
         toast(`🔔 ${loud[0].text}${loud[0].kind === 'lunch' ? ' · ' + loud[0].sub : ''}${loud.length > 1 ? ` 외 ${loud.length - 1}개` : ''}`);
@@ -1143,7 +1223,7 @@
       }
       paintBell();
     }
-    ['hub:notices', 'hub:messages', 'hub:schedules', 'hub:lunch', 'hub:team', 'hub:omok', 'hub:bb'].forEach(ev => document.addEventListener(ev, onData));
+    ['hub:notices', 'hub:messages', 'hub:schedules', 'hub:lunch', 'hub:team', 'hub:omok', 'hub:bb', 'hub:bp'].forEach(ev => document.addEventListener(ev, onData));
     paintBell();
 
     backend.startLive();
@@ -1153,5 +1233,5 @@
   // 페이지 시작: 데이터 준비 → 입장 확인 → 페이지 코드
   function boot(fn) { ready.then(() => { if (requireMe()) fn(); }); }
 
-  window.Hub = { TEAM, $, esc, icon, store, sess, activity, team, notices, messages, schedules, lunch, omok, bb, notifs, openNoticeEditor, openScheduleEditor, openInvite, TAGS, ST, member, shortName, avatar, avatars, ymd, parseYmd, addDays, weekStart, todayYmd, dayLabel, shortDate, rangeLabel, ago, DOW, pad, toast, renderShell, setTheme, isLight, requireMe, inviteUrl, copyText, ready, boot, isShared, showInitError, get initError() { return initError; }, get mode() { return backend ? backend.mode : null; } };
+  window.Hub = { TEAM, $, esc, icon, store, sess, activity, team, notices, messages, schedules, lunch, omok, bb, bp, notifs, openNoticeEditor, openScheduleEditor, openInvite, TAGS, ST, member, shortName, avatar, avatars, ymd, parseYmd, addDays, weekStart, todayYmd, dayLabel, shortDate, rangeLabel, ago, DOW, pad, toast, renderShell, setTheme, isLight, requireMe, inviteUrl, copyText, ready, boot, isShared, showInitError, get initError() { return initError; }, get mode() { return backend ? backend.mode : null; } };
 })();
