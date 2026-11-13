@@ -933,8 +933,8 @@ begin
   if p_ver is distinct from g.ver then raise exception 'stale'; end if;
   if not (me = g.turn or g.turn = any(g.resigned) or g.acted_at < now() - interval '3 minutes') then raise exception 'not_your_turn'; end if;
   if p_state is null or jsonb_typeof(p_state) <> 'object' or octet_length(p_state::text) > 40000 then raise exception 'bad_state'; end if;
-  -- v12~: 예전 버전 화면(브라우저 캐시)이 옛 규칙으로 저장하지 못하게 (v13: 규칙 버전 rv 4 이상만 — 더블 한 번 더)
-  if coalesce(case when jsonb_typeof(p_state -> 'rv') = 'number' then (p_state ->> 'rv')::numeric end, 0) < 4 then raise exception 'old_client'; end if;
+  -- v12~: 예전 버전 화면(브라우저 캐시)이 옛 규칙으로 저장하지 못하게 (v14: 규칙 버전 rv 5 이상만 — 32칸·휴게소 금고)
+  if coalesce(case when jsonb_typeof(p_state -> 'rv') = 'number' then (p_state ->> 'rv')::numeric end, 0) < 5 then raise exception 'old_client'; end if;
   if not coalesce(p_done, false) and not (p_turn = any(g.players)) then raise exception 'bad_state'; end if;
   update public.tv_games set ver = ver + 1, state = p_state, turn = case when coalesce(p_done, false) then null else p_turn end,
     acted_at = now(), updated_at = now() where id = p_game;

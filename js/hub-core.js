@@ -367,7 +367,7 @@
       if (ver !== g.ver) throw new Error('stale');
       if (!(me === g.turn || g.resigned.includes(g.turn) || Date.now() - g.acted > 180000)) throw new Error('not_your_turn');
       if (!st || typeof st !== 'object' || Array.isArray(st) || JSON.stringify(st).length > 40000) throw new Error('bad_state');
-      if (!(typeof st.rv === 'number' && st.rv >= 4)) throw new Error('old_client');
+      if (!(typeof st.rv === 'number' && st.rv >= 5)) throw new Error('old_client');
       if (!done && !g.players.includes(turn)) throw new Error('bad_state');
       Object.assign(g, { ver: g.ver + 1, state: JSON.parse(JSON.stringify(st)), turn: done ? null : turn, acted: Date.now(), upd: Date.now() });
       if (done) this._tfinish(g, (winners || []).filter(x => g.players.includes(x)), ['rounds', 'last', 'line', 'color'].includes(reason) ? reason : 'rounds');

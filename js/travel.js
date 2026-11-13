@@ -1,4 +1,4 @@
-/* 전국 일주 — 국내 여행지 28칸 보드게임 (라이트 규칙)
+/* 전국 일주 — 국내 여행지 32칸 보드게임 (라이트 규칙)
    개인전 2~4명 / 2:2 팀전(자리 0·2 vs 1·3). 컴퓨터 상대 없음.
    판정: 주사위·찬스카드는 서버가 시작할 때 정한 seed + 몇 번째 굴림인지(t)로 정해짐 → 다시 굴리기 불가.
          땅·통행료·카드 계산은 지금 차례인 사람의 브라우저가 하고 결과(state)를 저장(Hub.tv.commit).
@@ -18,28 +18,31 @@ window.Hub.boot(function () {
      규칙 (라이트 + v11: 라인·트리플 독점 승리, 우주여행, 무인도 탈출비, 인수)
      ========================================================= */
   // 규칙 버전: 저장할 때 state.rv에 넣음. 서버는 이보다 낮은(예전 화면 캐시) 저장을 막고, 화면은 더 높은 판이면 새로고침 안내
-  const RULES = 4;   // 4: 더블이면 한 번 더 · 더블 2번 연속이면 무인도
-  const N = 28, START_CASH = 1500, SALARY = 200, ISLAND = 7, ISL_TURNS = 2, SPACE = 21, ESCAPE = 100, TAKE = 1.5, TRIPLE = 3;
+  const RULES = 5;   // 4: 더블이면 한 번 더 · 더블 2번 연속이면 무인도 / 5: 32칸(줄마다 땅 6곳) · 여행세 50만 → 휴게소 금고
+  const N = 32, START_CASH = 1500, SALARY = 200, ISLAND = 8, ISL_TURNS = 2, REST = 16, SPACE = 24, ESCAPE = 100, TAKE = 1.5, TRIPLE = 3;
+  const POT = -1;   // pay()의 받는 쪽: 휴게소 금고
   const C = (n, g, p) => ({ k: 'city', n, g, p });
   const TILES = [
     { k: 'start', n: '출발' },
-    C('공주', 0, 60), C('부여', 0, 60), { k: 'chance', n: '찬스' }, C('전주', 1, 80), C('군산', 1, 80), C('남원', 1, 100),
+    C('공주', 0, 60), C('부여', 0, 60), C('보령', 0, 70), { k: 'chance', n: '찬스' }, C('전주', 1, 80), C('군산', 1, 80), C('남원', 1, 100),
     { k: 'island', n: '무인도' },
-    C('목포', 2, 110), C('여수', 2, 110), C('순천', 2, 130), { k: 'chance', n: '찬스' }, C('통영', 3, 140), C('거제', 3, 150),
+    C('목포', 2, 110), C('여수', 2, 110), C('순천', 2, 130), { k: 'chance', n: '찬스' }, C('통영', 3, 140), C('거제', 3, 150), C('김해', 3, 160),
     { k: 'rest', n: '휴게소' },
-    C('안동', 4, 160), C('경주', 4, 160), C('포항', 4, 180), { k: 'chance', n: '찬스' }, C('대구', 5, 200), C('부산', 5, 220),
-    { k: 'space', n: '우주여행' },
-    C('강릉', 6, 240), C('속초', 6, 240), C('평창', 6, 260), { k: 'tax', n: '여행세', p: 100 }, C('제주', 7, 300), C('서울', 7, 350),
+    C('안동', 4, 170), C('경주', 4, 170), C('포항', 4, 180), { k: 'chance', n: '찬스' }, C('대구', 5, 200), C('울산', 5, 210), C('부산', 5, 220),
+    { k: 'space', n: '우주여행', br: '우주|여행' },
+    C('강릉', 6, 240), C('속초', 6, 240), C('평창', 6, 260), { k: 'tax', n: '여행세', p: 50 }, C('인천', 7, 280), C('제주', 7, 300), C('서울', 7, 350),
   ];
-  const GROUPS = ['충청', '전북', '전남', '경남', '경북', '영남', '강원', '제주·서울'];
+  const GROUPS = ['충청', '전북', '전남', '경남', '경북', '영남', '강원', '인천·제주·서울'];
+  // v13 이전(28칸) 판을 32칸으로 옮길 때 칸 번호 바꾸기 (예전 번호 → 새 번호)
+  const OLD28 = [0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 23, 24, 25, 26, 27, 28, 30, 31];
   const LV = ['땅', '별장', '빌딩', '호텔'];
   const RENT = [0.1, 0.4, 1.0, 2.0];
   const bcost = (t) => Math.round(t.p / 2 / 10) * 10;            // 건물 한 단계 값
   const mate = (st, a, b) => st.mode === 'team' && a !== b && a % 2 === b % 2;
   // 독점 기준: 개인전은 사람마다, 팀전은 팀(같은 팀 땅을 합쳐서)
   const keyOf = (st, s) => st.mode === 'team' ? s % 2 : s;
-  const LINES = [[1, 2, 4, 5, 6], [8, 9, 10, 12, 13], [15, 16, 17, 19, 20], [22, 23, 24, 26, 27]];   // 모서리 사이 한 줄(찬스·여행세 빼고 땅 5곳)
-  const LINE_NAMES = ['충청·전북', '전남·경남', '경북·영남', '강원·제주·서울'];
+  const LINES = [[1, 2, 3, 5, 6, 7], [9, 10, 11, 13, 14, 15], [17, 18, 19, 21, 22, 23], [25, 26, 27, 29, 30, 31]];   // 모서리 사이 한 줄(찬스·여행세 빼고 땅 6곳)
+  const LINE_NAMES = ['충청·전북', '전남·경남', '경북·영남', '강원·수도권·제주'];
   const GROUP_TILES = [0, 1, 2, 3, 4, 5, 6, 7].map(gi => TILES.map((t, i) => t.k === 'city' && t.g === gi ? i : -1).filter(i => i >= 0));
   const ownsAll = (st, idxs, k) => idxs.every(i => st.own[i] && keyOf(st, st.own[i][0]) === k);
   const groupOwned = (st, g, s) => ownsAll(st, GROUP_TILES[g], keyOf(st, s));
@@ -65,8 +68,8 @@ window.Hub.boot(function () {
     { t: '과속 딱지', d: '-80만', f: (st, g, s) => { owe(st, g, s, null, 80, '과속 딱지'); } },
     { t: '길을 잘못 들었어요', d: '뒤로 3칸', f: (st, g, s) => { moveBy(st, g, s, -3); land(st, g, s, -1); } },
     { t: '배를 놓쳤어요', d: '무인도로 가요', f: (st, g, s) => { warp(st, g, s, ISLAND, false); st.isl[s] = ISL_TURNS; } },
-    { t: '서울 출장', d: '서울로 가요', f: (st, g, s) => { warp(st, g, s, 27, true); land(st, g, s, -1); } },
-    { t: '제주행 비행기', d: '제주로 가요', f: (st, g, s) => { warp(st, g, s, 26, true); land(st, g, s, -1); } },
+    { t: '서울 출장', d: '서울로 가요', f: (st, g, s) => { warp(st, g, s, 31, true); land(st, g, s, -1); } },
+    { t: '제주행 비행기', d: '제주로 가요', f: (st, g, s) => { warp(st, g, s, 30, true); land(st, g, s, -1); } },
     { t: '생일 축하!', d: '모두에게 30만씩 받아요', f: (st, g, s) => { active(st, g).filter(x => x !== s).forEach(x => pay(st, g, x, s, 30, '생일 축하금')); } },
     { t: '한턱 쏘기', d: '모두에게 30만씩 줘요', f: (st, g, s) => { active(st, g).filter(x => x !== s).forEach(x => { if (!isOut(st, g, s)) pay(st, g, s, x, 30, '한턱'); }); } },
     { t: '건물 점검', d: '건물 한 단계마다 25만', f: (st, g, s) => { const n = Object.keys(st.own).filter(i => st.own[i][0] === s).reduce((a, i) => a + st.own[i][1], 0); if (n) owe(st, g, s, null, n * 25, '건물 점검비'); } },
@@ -78,7 +81,7 @@ window.Hub.boot(function () {
   const init = (g) => {
     const n = g.players.length;
     return { v: 2, mode: g.mode, rounds: g.rounds, n, hs: Math.max(0, g.players.indexOf(g.host)), pos: Array(n).fill(0), cash: Array(n).fill(START_CASH), isl: Array(n).fill(0), space: Array(n).fill(false), tc: Array(n).fill(0),
-      out: [], own: {}, cur: 0, t: 0, phase: 'roll', pend: null, dice: null, mv: [], card: null, lastBy: null, lastText: '', log: [], end: null };
+      out: [], own: {}, pot: 0, nb: N, cur: 0, t: 0, phase: 'roll', pend: null, dice: null, mv: [], card: null, lastBy: null, lastText: '', log: [], end: null };
   };
   const clone = (o) => JSON.parse(JSON.stringify(o));
   const isOut = (st, g, s) => st.out.includes(g.players[s]) || g.resigned.includes(g.players[s]);
@@ -90,6 +93,14 @@ window.Hub.boot(function () {
   // 기권한 사람: 땅 반납·탈락 (+ v10 때 시작한 판에 없는 칸 채우기)
   function normalize(st, g) {
     if (!st.space) st.space = Array(st.n).fill(false);
+    if (st.pot == null) st.pot = 0;
+    if (st.nb !== N) {   // 28칸 시절 판 → 32칸 번호로 (말 위치·땅)
+      st.pos = st.pos.map(i => OLD28[i] != null ? OLD28[i] : i);
+      const own = {}; Object.keys(st.own).forEach(k => { own[OLD28[+k]] = st.own[k]; }); st.own = own;
+      if (st.pend && st.pend.i != null) st.pend.i = OLD28[st.pend.i];
+      if (st.pend && st.pend.tile >= 0) st.pend.tile = OLD28[st.pend.tile];
+      st.nb = N;
+    }
     g.players.forEach((p, s) => { if (g.resigned.includes(p) && !st.out.includes(p)) { release(st, s); st.cash[s] = 0; st.out.push(p); log(st, g, s, `${sname(g, s)} 님이 기권했어요`); } });
   }
   // 모자라면 건물(싼 곳부터) → 땅 순서로 반값에 팔아서 냄. 그래도 모자라면 파산(가진 돈 다 주고 탈락, 땅은 반납)
@@ -103,12 +114,12 @@ window.Hub.boot(function () {
       if (sold && st.cash[s] >= amt) log(st, g, s, `${sname(g, s)} 님이 돈이 모자라 건물·땅을 팔았어요 (+${won(got)})`);
     }
     if (st.cash[s] < amt) {
-      if (to != null) st.cash[to] += st.cash[s];
+      if (to === POT) st.pot += st.cash[s]; else if (to != null) st.cash[to] += st.cash[s];
       st.cash[s] = 0; release(st, s); st.out.push(g.players[s]);
       log(st, g, s, `${sname(g, s)} 님 파산! (${why} ${won(amt)}을 못 냈어요)`);
       return false;
     }
-    st.cash[s] -= amt; if (to != null) st.cash[to] += amt;
+    st.cash[s] -= amt; if (to === POT) st.pot += amt; else if (to != null) st.cash[to] += amt;
     return true;
   }
   function moveBy(st, g, s, k) {
@@ -156,10 +167,13 @@ window.Hub.boot(function () {
     } else if (t.k === 'chance') {
       if (card < 0) return;
       const c = CARDS[card]; st.card = { c: card, s }; log(st, g, s, `${who} 님 찬스: ${c.t} (${c.d})`); c.f(st, g, s);
-    } else if (t.k === 'tax') { if (owe(st, g, s, null, t.p, '여행세') === true) log(st, g, s, `${who} 님 · 여행세 ${won(t.p)}`); }
+    } else if (t.k === 'tax') { if (owe(st, g, s, POT, t.p, '여행세') === true) log(st, g, s, `${who} 님 · 여행세 ${won(t.p)} → 휴게소 금고 (지금 ${won(st.pot)})`); }
     else if (t.k === 'island') { st.isl[s] = ISL_TURNS; log(st, g, s, `${who} 님 · 무인도에 갇혔어요 · 다음 차례부터 '주사위(더블이면 탈출)' 또는 '100만 내고 탈출' 중에 골라요`); }
     else if (t.k === 'space') { st.space[s] = true; log(st, g, s, `${who} 님 · 우주여행! 다음 차례에 가고 싶은 칸으로 바로 가요`); }
-    else if (t.k === 'rest') log(st, g, s, `${who} 님 · 휴게소에서 쉬어 가요`);
+    else if (t.k === 'rest') {   // 여행세가 모인 금고를 통째로 받음
+      if (st.pot > 0) { const v = st.pot; st.cash[s] += v; st.pot = 0; log(st, g, s, `${who} 님 · 휴게소 금고에 모인 여행세 ${won(v)}을 받았어요!`); }
+      else log(st, g, s, `${who} 님 · 휴게소 금고가 비어 있어요`);
+    }
   }
   // 독점 승리: 한 줄(땅 5곳) 전부 → line / 같은 색 묶음 3개 전부 → color (팀전은 팀 땅 합쳐서)
   function monopoly(st, g) {
@@ -230,7 +244,7 @@ window.Hub.boot(function () {
       if (choice === 'pay' && st.cash[s] < p.amt) return;   // 아직 모자람
       st.pend = null; st.phase = 'roll';
       const ok = pay(st, g, s, p.to, p.amt, p.why);          // 'auto'면 모자란 만큼 알아서 팔아서 냄
-      if (ok) { log(st, g, s, `${sname(g, s)} 님 · ${p.why} ${won(p.amt)}${p.to != null ? ` → ${sname(g, p.to)} 님` : ''}`); if (p.tile >= 0) offerTake(st, g, s, p.tile); }
+      if (ok) { log(st, g, s, `${sname(g, s)} 님 · ${p.why} ${won(p.amt)}${p.to === POT ? ' → 휴게소 금고' : p.to != null ? ` → ${sname(g, p.to)} 님` : ''}`); if (p.tile >= 0) offerTake(st, g, s, p.tile); }
       if (!st.pend || isOut(st, g, s)) endTurn(st, g);
       return;
     }
@@ -270,7 +284,7 @@ window.Hub.boot(function () {
     const st = clone(g.state || init(g)); normalize(st, g);
     viewCache[g.id] = { key, st }; return st;
   }
-  window.__travel = { TILES, CARDS, LINES, init, draw, rentOf, worth, bcost, takePrice, doRoll, doSpace, decide, sell, sellValue, skip, finish, monopoly, colorsOf, pay, land, normalize, groupOwned };
+  window.__travel = { TILES, CARDS, LINES, N, OLD28, init, draw, rentOf, worth, bcost, takePrice, doRoll, doSpace, decide, sell, sellValue, skip, finish, monopoly, colorsOf, pay, land, normalize, groupOwned };
 
   /* =========================================================
      서버에 저장
@@ -309,7 +323,8 @@ window.Hub.boot(function () {
   const seatColor = (st, s) => st && st.mode === 'team' ? TEAM_COL[teamOf(st, s)][s >= 2 ? 1 : 0] : SEAT_COL[s];
   const teamName = (st, s) => teamOf(st, s) ? 'B팀' : 'A팀';
   // 칸 → 8×8 격자 자리 (출발은 오른쪽 아래, 시계 반대 방향… 아래줄 왼쪽으로 → 왼쪽 위로 → 위쪽 오른쪽으로 → 오른쪽 아래로)
-  const cell = (i) => i === 0 ? [8, 8] : i < 7 ? [8, 8 - i] : i === 7 ? [8, 1] : i < 14 ? [8 - (i - 7), 1] : i === 14 ? [1, 1] : i < 21 ? [1, i - 13] : i === 21 ? [1, 8] : [i - 20, 8];
+  // 9×9 테두리: 출발 오른쪽 아래 → 아래줄 왼쪽 → 왼쪽 줄 위로 → 위줄 오른쪽 → 오른쪽 줄 아래로
+  const cell = (i) => i === 0 ? [9, 9] : i < 8 ? [9, 9 - i] : i === 8 ? [9, 1] : i < 16 ? [9 - (i - 8), 1] : i === 16 ? [1, 1] : i < 24 ? [1, i - 15] : i === 24 ? [1, 9] : [i - 23, 9];
   const DICE = ['', '⚀', '⚁', '⚂', '⚃', '⚄', '⚅'];
   const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -341,7 +356,7 @@ window.Hub.boot(function () {
     const b = $('#tvb'), st = g ? stOf(g) : null;
     const pos = posOverride || (st ? st.pos : []), pm = g ? pickMode(g) : null;
     if (!b.dataset.ready) {
-      b.innerHTML = TILES.map((t, i) => { const [r, c] = cell(i); return `<button type="button" class="tvt tvt--${t.k}${t.k === 'city' ? ' tvg' + t.g : ''}${[0, 7, 14, 21].includes(i) ? ' tvt--corner' : ''}" data-i="${i}" style="grid-row:${r};grid-column:${c}" aria-label="${esc(t.n)}"><span class="tvt__n">${esc(t.n)}</span><span class="tvt__p"></span><span class="tvt__lv"></span><span class="tvt__toks"></span></button>`; }).join('') + `<div class="tvc" id="tvc"></div>`;
+      b.innerHTML = TILES.map((t, i) => { const [r, c] = cell(i); return `<button type="button" class="tvt tvt--${t.k}${t.k === 'city' ? ' tvg' + t.g : ''}${[0, ISLAND, REST, SPACE].includes(i) ? ' tvt--corner' : ''}" data-i="${i}" style="grid-row:${r};grid-column:${c}" aria-label="${esc(t.n)}"><span class="tvt__n">${t.br ? t.br.split('|').map(esc).join('<br>') : esc(t.n)}</span><span class="tvt__p"></span><span class="tvt__lv"></span><span class="tvt__toks"></span></button>`; }).join('') + `<div class="tvc" id="tvc"></div>`;
       b.dataset.ready = '1';
     }
     b.querySelectorAll('.tvt').forEach(el => {
@@ -350,7 +365,7 @@ window.Hub.boot(function () {
       el.classList.toggle('is-own', !!o); el.classList.toggle('is-info', info === i);
       el.classList.toggle('is-pick', !!(pm && canPick(g, pm, i))); el.classList.toggle('is-target', !!(pm && pick === i));
       el.classList.toggle('is-here', !!(st && g.status === 'playing' && !anim && st.pos[st.cur] === i));
-      el.querySelector('.tvt__p').textContent = t.k === 'city' ? (o ? won(rentOf(st, i)) : won(t.p)) : t.k === 'tax' ? won(t.p) : '';
+      el.querySelector('.tvt__p').textContent = t.k === 'city' ? (o ? won(rentOf(st, i)) : won(t.p)) : t.k === 'tax' ? won(t.p) : t.k === 'rest' && st && st.pot ? `금고 ${won(st.pot)}` : '';
       el.querySelector('.tvt__lv').innerHTML = o && o[1] ? (o[1] === 3 ? '★' : '▮'.repeat(o[1])) : '';
       const toks = st ? g.players.map((p, s) => ({ p, s })).filter(x => pos[x.s] === i && !isOut(st, g, x.s)) : [];
       el.querySelector('.tvt__toks').innerHTML = toks.map(x => `<span class="tvtok${x.s === st.cur && g.status === 'playing' ? ' is-cur' : ''}" style="--c:${seatColor(st, x.s)}" title="${esc(nm(x.p))}">${H.avatar(x.p)}</span>`).join('');
@@ -361,7 +376,7 @@ window.Hub.boot(function () {
 
   function infoHtml(g, i) {
     const t = TILES[i], st = stOf(g), o = st.own[i];
-    const desc = { start: `지나가거나 도착하면 월급 ${won(SALARY)}`, island: `도착하면 2번 쉬어요 · 더블이 나오면 바로 탈출, 또는 ${won(ESCAPE)} 내고 탈출`, rest: '아무 일도 없어요 · 쉬어 가요', space: '도착하면 다음 차례에 굴리지 않고 원하는 칸으로 이동 · 강릉~서울은 월급 없음, 그 뒤로는 출발을 지나서 월급', chance: '찬스카드 12장 중 하나', tax: `${won(t.p)}을 내요` }[t.k];
+    const desc = { start: `지나가거나 도착하면 월급 ${won(SALARY)}`, island: `도착하면 2번 쉬어요 · 더블이 나오면 바로 탈출, 또는 ${won(ESCAPE)} 내고 탈출`, rest: `여행세가 모이는 금고 · 도착하면 모인 돈을 다 받아요 (지금 ${won(st.pot || 0)})`, space: '도착하면 다음 차례에 굴리지 않고 원하는 칸으로 이동 · 강릉~서울은 월급 없음, 그 뒤로는 출발을 지나서 월급', chance: '찬스카드 12장 중 하나', tax: `${won(t.p)}을 내요 · 낸 돈은 휴게소 금고에 모여요` }[t.k];
     if (t.k !== 'city') return `<div class="tvinfo"><b>${esc(t.n)}</b><span>${desc}</span><button class="link-btn" type="button" data-info-close>닫기</button></div>`;
     const b = bcost(t), same = TILES.filter(x => x.g === t.g).map(x => x.n).join('·');
     return `<div class="tvinfo"><b><i class="tvdot tvg${t.g}"></i>${esc(t.n)} <small>${GROUPS[t.g]}</small></b>
@@ -387,7 +402,7 @@ window.Hub.boot(function () {
   const canPick = (g, mode, i) => { const st = stOf(g); return mode === 'space' ? i !== SPACE : mode === 'sell' ? !!(st.own[i] && st.own[i][0] === st.cur) : false; };
   function paintCenter(g) {
     const c = $('#tvc'); if (!c) return;
-    if (!g || g.status !== 'playing') { c.innerHTML = info != null && g && g.players.length ? infoHtml(g, info) : `<div class="tvc__logo">${icon('map', 28)}<b>전국 일주</b><small>국내 여행지 28칸</small></div>`; return; }
+    if (!g || g.status !== 'playing') { c.innerHTML = info != null && g && g.players.length ? infoHtml(g, info) : `<div class="tvc__logo">${icon('map', 28)}<b>전국 일주</b><small>국내 여행지 32칸</small></div>`; return; }
     if (info != null && !anim) { c.innerHTML = infoHtml(g, info); return; }
     if (g.state && (g.state.rv || 0) > RULES) { c.innerHTML = `<span class="tvc__st"><b>새 버전 규칙으로 진행 중이에요</b><small>이 화면은 예전 버전이라 둘 수 없어요</small></span><button class="btn btn--accent btn--sm" type="button" onclick="location.reload()">새로고침</button>`; return; }
     const st = stOf(g), s = st.cur, mine = g.players[s] === me && !g.resigned.includes(me), pm = pickMode(g);
@@ -456,7 +471,7 @@ window.Hub.boot(function () {
     const team2 = st.mode === 'team';
     const tsum = team2 ? [0, 1].map(k => g.players.reduce((a, _, s) => a + (teamOf(st, s) === k && !isOut(st, g, s) ? worth(st, s) : 0), 0)) : null;
     // 독점 진행: 다 가진 색 묶음 수 / 가장 많이 가진 줄
-    const prog = (k) => { const cs = colorsOf(st, k), ln = Math.max(...LINES.map(L => L.filter(i => st.own[i] && keyOf(st, st.own[i][0]) === k).length)); return `색 ${cs}/${TRIPLE} · 줄 ${ln}/5`; };
+    const prog = (k) => { const cs = colorsOf(st, k), ln = Math.max(...LINES.map(L => L.filter(i => st.own[i] && keyOf(st, st.own[i][0]) === k).length)); return `색 ${cs}/${TRIPLE} · 줄 ${ln}/${LINES[0].length}`; };
     const tk = (t) => st.hs % 2 === 0 ? t : 1 - t;   // A팀(방장 팀)의 자리 짝홀
     box.innerHTML = (team2 ? `<div class="tvteams"><span style="--c:${TEAM_COL[0][0]}">A팀 ${won(tsum[0])}<small>${prog(tk(0))}</small></span><span style="--c:${TEAM_COL[1][0]}">B팀 ${won(tsum[1])}<small>${prog(tk(1))}</small></span></div>` : '') +
       `<ol class="tvplist">${g.players.map((p, s) => {
@@ -528,9 +543,10 @@ window.Hub.boot(function () {
           <li>통행료를 낸 뒤 그 땅을 1.5배 값에 <b>인수</b>할 수 있어요(호텔은 불가)${mode === 'team' ? ' · 상대 팀 땅만' : ''}</li>
           <li>돈이 모자라면 팔 땅을 직접 골라요(땅+건물 반값, '자동으로 팔기'도 있음). 다 팔아도 모자라면 파산. 내 차례엔 언제든 땅 팔기 가능</li>
           <li>주사위 <b>더블이면 한 번 더</b>, 더블 2번 연속이면 무인도로(움직이지 않고 바로)</li>
-          <li>찬스 12장 · 무인도 2번 쉬기(더블이면 탈출, ${won(ESCAPE)} 내면 바로 탈출) · 여행세 ${won(100)}</li>
+          <li>찬스 12장 · 무인도 2번 쉬기(더블이면 탈출, ${won(ESCAPE)} 내면 바로 탈출)</li>
+          <li><b>여행세</b> ${won(TILES.find(t => t.k === 'tax').p)}은 <b>휴게소 금고</b>에 모이고, 휴게소에 도착한 사람이 모인 돈을 다 받아요</li>
           <li><b>우주여행</b>: 다음 차례에 원하는 칸으로. 강릉~서울은 월급 없음, 그 뒤 칸은 출발을 지나 월급</li>
-          <li><b>바로 승리</b>: 한 줄(모서리 사이 땅 5곳) 다 가지면 <b>라인 독점</b>, 같은 색 묶음 ${TRIPLE}개 다 가지면 <b>트리플 독점</b>${mode === 'team' ? ' (팀 땅 합쳐서)' : ''}</li>
+          <li><b>바로 승리</b>: 한 줄(모서리 사이 땅 6곳) 다 가지면 <b>라인 독점</b>, 같은 색 묶음 ${TRIPLE}개 다 가지면 <b>트리플 독점</b>${mode === 'team' ? ' (팀 땅 합쳐서)' : ''}</li>
           <li>정한 바퀴가 끝나면 총자산(돈+땅+건물)이 많은 쪽이 승. 혼자(한 팀)만 남아도 승</li>
           <li>3분 넘게 안 두면 다른 사람이 차례를 넘길 수 있어요</li>
         </ul></details>`;
