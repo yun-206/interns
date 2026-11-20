@@ -1,5 +1,5 @@
 /* 전국 일주 — 국내 여행지 32칸 보드게임 (라이트 규칙)
-   개인전 2~4명 / 2:2 팀전(자리 0·2 vs 1·3). 컴퓨터 상대 없음.
+   개인전 2~4명 / 2:2 팀전(자리 0·2 vs 1·3). v15: 컴퓨터와 하기(이 기기에만 저장) · 자동 플레이.
    판정: 주사위·찬스카드는 서버가 시작할 때 정한 seed + 몇 번째 굴림인지(t)로 정해짐 → 다시 굴리기 불가.
          땅·통행료·카드 계산은 지금 차례인 사람의 브라우저가 하고 결과(state)를 저장(Hub.tv.commit).
          서버는 차례·ver(동시 저장 막기)·크기만 확인. */
@@ -10,7 +10,11 @@ window.Hub.boot(function () {
   document.querySelectorAll('[data-ic]').forEach(el => { el.outerHTML = icon(el.dataset.ic, 18); });
 
   const me = team.meId();
-  const nm = (id) => H.member(id).name;
+  // 컴퓨터 상대(v15): 아이디 'cpu:1'~'cpu:3' — 이 기기에서만 도는 판
+  const CPU_NAMES = { 'cpu:1': '컴퓨터 1', 'cpu:2': '컴퓨터 2', 'cpu:3': '컴퓨터 3' };
+  const isCpu = (id) => typeof id === 'string' && id.startsWith('cpu:');
+  const nm = (id) => isCpu(id) ? (CPU_NAMES[id] || '컴퓨터') : H.member(id).name;
+  const av = (id, cls) => isCpu(id) ? `<span class="av av--cpu ${cls || ''}" title="${esc(nm(id))}" data-tone="${id.slice(4)}">${icon('cpu', cls === 'av--lg' ? 20 : 13)}</span>` : H.avatar(id, cls);
   const live = (t) => { $('#tvlive').textContent = t; };
   const won = (n) => `${Number(n).toLocaleString('ko-KR')}만`;
 
@@ -305,10 +309,153 @@ window.Hub.boot(function () {
       const by = st.cur;
       fn(st);
       st.lastBy = by; st.lastText = actLog.slice(-2).join(' · ').slice(0, 90); actLog = null;
+      if (!Array.isArray(st.auto)) st.auto = Array(st.n).fill(false);
+      if (g.players[by] === me) st.auto[by] = autoOn(g);          // 다른 사람 화면에 '자동' 표시
       const done = !!st.end;
-      await tv.commit(g.id, g.ver, st, done ? null : g.players[st.cur], done, done ? st.end.winners : null, done ? st.end.reason : null);
+      if (g.local) aiCommit(g, st, done);
+      else await tv.commit(g.id, g.ver, st, done ? null : g.players[st.cur], done, done ? st.end.winners : null, done ? st.end.reason : null);
       if (st.cur !== by || !Object.keys(st.own).some(i => st.own[i][0] === by)) sellMode = false;
     });
+  }
+
+  /* =========================================================
+     컴퓨터와 하기 (v15) — 이 기기에만 저장 (localStorage), 서버 안 씀
+     ========================================================= */
+  const AI_KEY = 'interns-tv-ai:' + me, MODE_KEY = 'interns-tv-mode';
+  const loadAi = () => { const d = H.store.get(AI_KEY, null) || {}; return { set: Object.assign({ mode: 'solo', cpus: 1, level: 'normal', rounds: 15 }, d.set || {}), rec: Object.assign({ w: 0, l: 0, d: 0 }, d.rec || {}), game: d.game || null }; };
+  let aiData = loadAi(), aiArmed = false;
+  const saveAi = () => H.store.set(AI_KEY, aiData);
+  function aiNew() {
+    const S = aiData.set, n = S.mode === 'team' ? 3 : Math.min(3, Math.max(1, S.cpus));
+    let ps;
+    if (S.mode === 'team') { ps = [me, 'cpu:2', 'cpu:1', 'cpu:3']; const k = Math.random() * 4 | 0; ps = ps.slice(k).concat(ps.slice(0, k)); }   // 나·컴퓨터1 = A팀
+    else { ps = [me].concat(['cpu:1', 'cpu:2', 'cpu:3'].slice(0, n)); for (let i = ps.length - 1; i > 0; i--) { const j = Math.random() * (i + 1) | 0; [ps[i], ps[j]] = [ps[j], ps[i]]; } }
+    aiData.game = { id: 'ai', local: true, host: me, mode: S.mode, rounds: S.rounds, level: S.level, players: ps, joined: ps.slice(), invited: [], resigned: [], winners: [], reason: null,
+      status: 'playing', turn: ps[0], ver: 0, state: null, seed: 1 + Math.floor(Math.random() * 2147483646), acted: Date.now(), started: Date.now(), at: Date.now(), upd: Date.now() };
+    saveAi(); anim = null; info = null; sellMode = false; pick = null; seenVer.ai = 0; aiArmed = false;
+    render(); live('컴퓨터와 새 판을 시작했어요');
+  }
+  function aiRecord(g) {
+    if (g.counted) return; g.counted = true;
+    aiData.rec[!g.winners.length ? 'd' : g.winners.includes(me) ? 'w' : 'l']++;
+  }
+  function aiCommit(g, st, done) {
+    // 개인전에서 내가 파산하면 컴퓨터끼리 계속 두지 않고 바로 끝 (남은 컴퓨터 중 총자산 1등이 승)
+    if (!done && g.mode !== 'team' && st.out.includes(me)) {
+      const act = active(st, g), best = Math.max(...act.map(x => worth(st, x)));
+      st.end = { reason: 'bankrupt', winners: act.filter(x => worth(st, x) === best).map(x => g.players[x]) }; done = true;
+    }
+    Object.assign(g, { ver: g.ver + 1, state: st, turn: done ? null : g.players[st.cur], acted: Date.now(), upd: Date.now() });
+    if (done) { Object.assign(g, { status: 'done', winners: st.end.winners || [], reason: st.end.reason }); aiRecord(g); }
+    saveAi();
+  }
+  // 기권: 판 끝 — 개인전은 남은 컴퓨터 중 총자산 1등, 팀전은 상대 팀 승
+  function aiResign() {
+    const g = aiData.game; if (!g || g.status !== 'playing') return;
+    g.resigned = [me];
+    const st = clone(g.state || init(g)); normalize(st, g); st.end = { reason: 'resign' };
+    const my = g.players.indexOf(me);
+    let w;
+    if (g.mode === 'team') w = g.players.filter((p, k) => k % 2 !== my % 2);
+    else { const act = active(st, g); const best = Math.max(...act.map(x => worth(st, x))); w = act.filter(x => worth(st, x) === best).map(x => g.players[x]); }
+    st.end.winners = w;
+    Object.assign(g, { state: st, ver: g.ver + 1, status: 'done', winners: w, reason: 'resign', turn: null, upd: Date.now() });
+    aiRecord(g); saveAi(); render();
+  }
+  let tvMode = (() => { try { return sessionStorage.getItem(MODE_KEY); } catch (e) { return null; } })();
+  if (new URLSearchParams(location.search).get('g')) tvMode = 'pvp';
+  if (tvMode !== 'ai' && tvMode !== 'pvp') tvMode = 'pvp';
+  const setMode = (m) => { tvMode = m; try { sessionStorage.setItem(MODE_KEY, m); } catch (e) {} };
+  const getG = () => tvMode === 'ai' ? aiData.game : (cur ? tv.get(cur) : null);
+
+  /* ---------- 컴퓨터 생각 (쉬움·보통) — 컴퓨터 차례 + 내 '자동 플레이'에 같이 씀 ---------- */
+  // 남겨 둘 돈: 상대 땅 중 가장 비싼 통행료의 70% (쉬움은 60만)
+  function botReserve(st, s, lv) {
+    if (lv === 'easy') return 60;
+    let mx = 0; Object.keys(st.own).forEach(i => { const o = st.own[i]; if (o[0] !== s && !mate(st, o[0], s)) mx = Math.max(mx, rentOf(st, +i)); });
+    return Math.max(120, Math.round(mx * 0.7));
+  }
+  // 그 칸이 속한 색 묶음·줄에서 내(우리 팀)·상대가 몇 곳 가졌나
+  function spot(st, s, i) {
+    const k = keyOf(st, s), grp = GROUP_TILES[TILES[i].g], line = LINES.find(L => L.includes(i)) || [];
+    const count = (arr) => { const by = {}; let mine = 0; arr.forEach(j => { const o = st.own[j]; if (!o) return; const ok = keyOf(st, o[0]); if (ok === k) mine++; else by[ok] = (by[ok] || 0) + 1; }); return { mine, opp: Math.max(0, ...Object.values(by)) }; };
+    const gc = count(grp), lc = count(line);
+    return { mine: gc.mine, oppMax: gc.opp, size: grp.length, lineMine: lc.mine, lineOpp: lc.opp, lineSize: line.length, colors: colorsOf(st, k) };
+  }
+  function botChoice(st, g, s, lv) {
+    const p = st.pend, cash = st.cash[s], r = Math.random();
+    if (p.type === 'debt') return 'auto';
+    const t = TILES[p.i], b = bcost(t), res = botReserve(st, s, lv);
+    if (lv === 'easy') {
+      if (p.type === 'buy') return cash - t.p >= 50 && r < 0.75 ? (cash - t.p - b >= 300 && r < 0.2 ? 'villa' : 'land') : 'skip';
+      if (p.type === 'build') return cash - b >= 60 && r < 0.55 ? 'build' : 'skip';
+      return cash - takePrice(st, p.i) >= 100 && r < 0.3 ? 'take' : 'skip';
+    }
+    const x = spot(st, s, p.i);
+    const key = x.mine >= 1 || x.oppMax >= x.size - 1 || x.lineMine >= 3 || x.lineOpp >= x.lineSize - 2;
+    if (p.type === 'buy') { const left = cash - t.p; if (left >= res || (key && left >= 40)) return left - b >= res * 1.6 ? 'villa' : 'land'; return 'skip'; }
+    if (p.type === 'build') return cash - b >= res ? 'build' : 'skip';
+    const left = cash - takePrice(st, p.i);
+    const great = x.mine + 1 >= x.size || x.lineMine + 1 >= x.lineSize || x.oppMax >= x.size - 1 || x.lineOpp >= x.lineSize - 2 || rentOf(st, p.i) >= 100;
+    return left >= res && great ? 'take' : 'skip';
+  }
+  function botSpace(st, g, s, lv) {
+    const cash = st.cash[s], cands = TILES.map((t, i) => i).filter(i => i !== SPACE);
+    if (lv === 'easy') { const free = cands.filter(i => TILES[i].k === 'city' && !st.own[i] && TILES[i].p <= cash); const pool = free.length ? free : cands; return pool[Math.random() * pool.length | 0]; }
+    let best = cands[0], bs = -1e9;
+    cands.forEach(i => {
+      const t = TILES[i], o = st.own[i]; let sc = i < SPACE ? 20 : 0;   // 출발을 지나면 월급
+      if (t.k === 'city') {
+        if (!o) {
+          if (cash >= t.p) { const x = spot(st, s, i); sc += t.p / 10 + x.mine * 40 + (x.oppMax >= x.size - 1 ? 35 : 0) + x.lineMine * 8 + ((x.mine + 1 >= x.size && x.colors + 1 >= TRIPLE) || x.lineMine + 1 >= x.lineSize ? 300 : x.mine + 1 >= x.size ? 60 : 0); }
+          else sc -= 20;
+        } else if (keyOf(st, o[0]) === keyOf(st, s)) sc += o[1] < 3 && cash >= bcost(t) ? 25 + o[1] * 5 : 5;
+        else sc -= rentOf(st, i) / 3;
+      } else if (t.k === 'rest') sc += (st.pot || 0) / 2;
+      else if (t.k === 'island') sc -= 60; else if (t.k === 'tax') sc -= 30; else if (t.k === 'start') sc += 10; else if (t.k === 'chance') sc += 2;
+      if (sc > bs) { bs = sc; best = i; }
+    });
+    return best;
+  }
+  function botEscape(st, s, lv) {
+    if (st.cash[s] < ESCAPE) return false;
+    if (lv === 'easy') return Math.random() < 0.3 && st.cash[s] >= ESCAPE + 100;
+    const free = TILES.filter((t, i) => t.k === 'city' && !st.own[i]).length;
+    return st.cash[s] - ESCAPE >= botReserve(st, s, lv) && free >= 6;   // 빈 땅이 많을 때만 돈 내고 나감
+  }
+  function botAct(st, g, lv) {
+    const s = st.cur;
+    if (st.pend) return decide(st, g, botChoice(st, g, s, lv));
+    if (st.space[s]) return doSpace(st, g, botSpace(st, g, s, lv));
+    if (st.isl[s] > 0) return doRoll(st, g, botEscape(st, s, lv));
+    return doRoll(st, g);
+  }
+  Object.assign(window.__travel, { botAct, botChoice, botSpace, botEscape, botReserve });
+  // 자동 플레이 (잠시 자리 비울 때) — 이 탭에서만, 게임마다 켜고 끔
+  const AUTO_KEY = (id) => 'interns-tv-auto:' + me + ':' + id;
+  const autoOn = (g) => { if (!g) return false; try { return sessionStorage.getItem(AUTO_KEY(g.id)) === '1'; } catch (e) { return false; } };
+  const setAuto = (g, on) => { try { if (on) sessionStorage.setItem(AUTO_KEY(g.id), '1'); else sessionStorage.removeItem(AUTO_KEY(g.id)); } catch (e) {} };
+  // 지금 차례를 컴퓨터가 둬야 하면 그 실력, 아니면 null
+  function botSeat(g) {
+    if (!g || g.status !== 'playing' || anim || busy || !g.turn) return null;
+    if (g.local && isCpu(g.turn)) return g.level || 'normal';
+    if (g.turn === me && !g.resigned.includes(me) && autoOn(g)) return 'normal';
+    return null;
+  }
+  let botTimer = null, botKey = null;
+  function botTick() {
+    const g = getG(), lv = botSeat(g); if (!lv) return;
+    const key = g.id + ':' + g.ver; if (botKey === key) return; botKey = key;
+    clearTimeout(botTimer);
+    botTimer = setTimeout(() => {
+      const g2 = getG();
+      if (!g2 || g2.id !== g.id || g2.ver !== g.ver || botSeat(g2) !== lv) { botKey = null; botTick(); return; }
+      const v0 = g2.ver;
+      play(g2, (st2) => botAct(st2, g2, lv)).then(() => {
+        const g3 = getG();
+        if (g3 && !g3.local && g3.id === g2.id && g3.ver === v0 && autoOn(g3)) { setAuto(g3, false); H.toast('저장이 안 돼서 자동 플레이를 껐어요'); render(); }
+      });
+    }, g.local ? 650 : 900);
   }
 
   /* =========================================================
@@ -368,7 +515,7 @@ window.Hub.boot(function () {
       el.querySelector('.tvt__p').textContent = t.k === 'city' ? (o ? won(rentOf(st, i)) : won(t.p)) : t.k === 'tax' ? won(t.p) : t.k === 'rest' && st && st.pot ? `금고 ${won(st.pot)}` : '';
       el.querySelector('.tvt__lv').innerHTML = o && o[1] ? (o[1] === 3 ? '★' : '▮'.repeat(o[1])) : '';
       const toks = st ? g.players.map((p, s) => ({ p, s })).filter(x => pos[x.s] === i && !isOut(st, g, x.s)) : [];
-      el.querySelector('.tvt__toks').innerHTML = toks.map(x => `<span class="tvtok${x.s === st.cur && g.status === 'playing' ? ' is-cur' : ''}" style="--c:${seatColor(st, x.s)}" title="${esc(nm(x.p))}">${H.avatar(x.p)}</span>`).join('');
+      el.querySelector('.tvt__toks').innerHTML = toks.map(x => `<span class="tvtok${x.s === st.cur && g.status === 'playing' ? ' is-cur' : ''}" style="--c:${seatColor(st, x.s)}" title="${esc(nm(x.p))}">${av(x.p)}</span>`).join('');
       const lbl = `${t.n}${t.k === 'city' ? ` · ${GROUPS[t.g]} · ${o ? `${nm(g.players[o[0]])} 님 ${LV[o[1]]} · 통행료 ${won(rentOf(st, i))}` : `${won(t.p)}`}` : ''}${toks.length ? ` · 여기: ${toks.map(x => nm(x.p)).join(', ')}` : ''}`;
       el.setAttribute('aria-label', lbl);
     });
@@ -393,7 +540,7 @@ window.Hub.boot(function () {
   function pickMode(g) {
     if (!g || g.status !== 'playing' || anim || busy) return null;
     const st = stOf(g), s = st.cur;
-    if (g.players[s] !== me || g.resigned.includes(me)) return null;
+    if (g.players[s] !== me || g.resigned.includes(me) || autoOn(g)) return null;
     if (st.phase === 'roll' && st.space[s] && !sellMode) return 'space';
     if (st.pend && st.pend.type === 'debt') return 'sell';
     if (sellMode && (st.phase === 'roll' || (st.pend && st.pend.type === 'buy'))) return 'sell';
@@ -405,7 +552,7 @@ window.Hub.boot(function () {
     if (!g || g.status !== 'playing') { c.innerHTML = info != null && g && g.players.length ? infoHtml(g, info) : `<div class="tvc__logo">${icon('map', 28)}<b>전국 일주</b><small>국내 여행지 32칸</small></div>`; return; }
     if (info != null && !anim) { c.innerHTML = infoHtml(g, info); return; }
     if (g.state && (g.state.rv || 0) > RULES) { c.innerHTML = `<span class="tvc__st"><b>새 버전 규칙으로 진행 중이에요</b><small>이 화면은 예전 버전이라 둘 수 없어요</small></span><button class="btn btn--accent btn--sm" type="button" onclick="location.reload()">새로고침</button>`; return; }
-    const st = stOf(g), s = st.cur, mine = g.players[s] === me && !g.resigned.includes(me), pm = pickMode(g);
+    const st = stOf(g), s = st.cur, autoMe = g.players[s] === me && autoOn(g), mine = g.players[s] === me && !g.resigned.includes(me) && !autoMe, pm = pickMode(g);
     const round = Math.min(st.rounds, Math.min(...active(st, g).map(x => st.tc[x])) + 1);
     const d = anim && anim.dice ? anim.dice : st.dice;
     const btn = (attr, label, ghost, dis) => `<button class="btn ${ghost ? 'btn--ghost' : 'btn--accent'} btn--sm" type="button" ${attr}${dis ? ' disabled' : ''}>${label}</button>`;
@@ -439,10 +586,12 @@ window.Hub.boot(function () {
       body = `<span class="tvc__st"><b>${st.dbl ? '더블! 한 번 더 굴려요' : '내 차례예요'}</b>${st.dbl ? ' <small>또 더블이 나오면 무인도로 가요</small>' : ''}${st.isl[s] ? ` <small>무인도 · 더블이면 탈출, 아니면 ${won(ESCAPE)} 내고 탈출</small>` : ''}</span>
         <span class="tvc__btns tvc__btns--main"><button class="btn btn--accent tvroll" type="button" id="tvRoll">${icon('dice', 18)}${st.isl[s] ? '주사위 (더블이면 탈출)' : st.dbl ? '한 번 더 굴리기' : '주사위 굴리기'}</button>${st.isl[s] ? btn('id="tvEscape"', `${won(ESCAPE)} 내고 탈출`, true, st.cash[s] < ESCAPE) : ''}${hasLand ? btn('data-sell-on', '땅 팔기', true) : ''}</span>`;
     } else {
-      const stuck = g.players.includes(me) && !g.resigned.includes(me) && Date.now() - g.acted > 180000;
+      const stuck = !g.local && g.players.includes(me) && !g.resigned.includes(me) && Date.now() - g.acted > 180000;
       lastStuck = stuck;
       const doing = st.pend && st.pend.type === 'debt' ? '돈 마련하는 중' : st.phase === 'roll' && st.dbl ? '더블 · 한 번 더 굴리는 중' : st.phase === 'decide' ? '고르는 중' : st.space[s] ? '우주여행 갈 곳 고르는 중' : '차례';
-      body = `<span class="tvc__st"><span class="tvc__who" style="--c:${seatColor(st, s)}">${H.avatar(g.players[s])}</span><b>${esc(sname(g, s))}</b> 님 ${doing}</span>${stuck ? `<button class="btn btn--ghost btn--sm" type="button" id="tvSkip">3분 넘게 안 둬서 차례 넘기기</button>` : ''}`;
+      const bot = !isCpu(g.players[s]) && st.auto && st.auto[s];
+      body = autoMe ? `<span class="tvc__st"><b>자동 플레이 중</b> <small>컴퓨터가 내 차례를 대신 두고 있어요 · 아래에서 끌 수 있어요</small></span>`
+        : `<span class="tvc__st"><span class="tvc__who" style="--c:${seatColor(st, s)}">${av(g.players[s])}</span><b>${esc(sname(g, s))}</b> ${isCpu(g.players[s]) ? '생각 중…' : `님 ${doing}`}${bot ? ' <small>(자동)</small>' : ''}</span>${stuck ? `<button class="btn btn--ghost btn--sm" type="button" id="tvSkip">3분 넘게 안 둬서 차례 넘기기</button>` : ''}`;
     }
     const choosing = !!pm || (mine && !anim && st.phase === 'decide' && st.pend);   // 고르는 중엔 고를 것만 (휴대폰 가운데 칸이 좁아서)
     const card = !anim && !choosing && st.card && st.lastBy === st.card.s ? CARDS[st.card.c] : null;
@@ -477,8 +626,8 @@ window.Hub.boot(function () {
       `<ol class="tvplist">${g.players.map((p, s) => {
         const out = isOut(st, g, s), win = g.status === 'done' && g.winners.includes(p);
         return `<li class="tvp${s === st.cur && g.status === 'playing' ? ' is-cur' : ''}${out ? ' is-out' : ''}${p === me ? ' is-me' : ''}${win ? ' is-win' : ''}" style="--c:${seatColor(st, s)}">
-          <span class="tvp__av">${H.avatar(p)}</span>
-          <span class="tvp__txt"><b>${esc(nm(p))}${team2 ? ` <small>${teamName(st, s)}</small>` : ''}</b><small>${out ? (g.resigned.includes(p) ? '기권' : '파산') : `${won(st.cash[s])} · 자산 ${won(worth(st, s))}`}${!out && st.isl[s] ? ' · 무인도' : ''}${!out && st.space[s] ? ' · 우주여행' : ''}</small>${!team2 && !out ? `<small class="tvp__mono">${prog(s)}</small>` : ''}</span>
+          <span class="tvp__av">${av(p)}</span>
+          <span class="tvp__txt"><b>${esc(nm(p))}${team2 ? ` <small>${teamName(st, s)}</small>` : ''}</b><small>${out ? (g.resigned.includes(p) ? '기권' : '파산') : `${won(st.cash[s])} · 자산 ${won(worth(st, s))}`}${!out && st.isl[s] ? ' · 무인도' : ''}${!out && st.space[s] ? ' · 우주여행' : ''}${!out && st.auto && st.auto[s] && g.status === 'playing' ? ' · <b class="tvp__auto">자동</b>' : ''}</small>${!team2 && !out ? `<small class="tvp__mono">${prog(s)}</small>` : ''}</span>
           ${win ? `<span class="tvp__win">${icon('trophy', 14)}</span>` : ''}</li>`;
       }).join('')}</ol>`;
   }
@@ -490,9 +639,53 @@ window.Hub.boot(function () {
     ol.innerHTML = st.log.slice(-6).reverse().map(l => `<li style="--c:${seatColor(st, l.s)}">${esc(l.x)}</li>`).join('');
   }
 
+  // 규칙 카드 (동기와·컴퓨터와 같이 씀)
+  const rulesHtml = (mode, ai) => `
+<details class="card ocard tvrules"><summary class="card__title">${icon('doc', 18)}규칙</summary>
+        <ul class="bprules">
+          <li>시작 돈 ${won(START_CASH)} · 출발을 지나면 월급 ${won(SALARY)}</li>
+          <li>빈 땅에 서면 살 수 있어요(땅만 / 땅+별장). 내 땅에 다시 서면 건물 한 단계 올리기: 별장 → 빌딩 → 호텔</li>
+          <li>남의 땅에 서면 통행료. 같은 색 땅을 다 가지면 2배${mode === 'team' ? ' · 같은 팀 땅은 통행료 없고 내 돈으로 건물도 올려 줄 수 있어요' : ''}</li>
+          <li>통행료를 낸 뒤 그 땅을 1.5배 값에 <b>인수</b>할 수 있어요(호텔은 불가)${mode === 'team' ? ' · 상대 팀 땅만' : ''}</li>
+          <li>돈이 모자라면 팔 땅을 직접 골라요(땅+건물 반값, '자동으로 팔기'도 있음). 다 팔아도 모자라면 파산. 내 차례엔 언제든 땅 팔기 가능</li>
+          <li>주사위 <b>더블이면 한 번 더</b>, 더블 2번 연속이면 무인도로(움직이지 않고 바로)</li>
+          <li>찬스 12장 · 무인도 2번 쉬기(더블이면 탈출, ${won(ESCAPE)} 내면 바로 탈출)</li>
+          <li><b>여행세</b> ${won(TILES.find(t => t.k === 'tax').p)}은 <b>휴게소 금고</b>에 모이고, 휴게소에 도착한 사람이 모인 돈을 다 받아요</li>
+          <li><b>우주여행</b>: 다음 차례에 원하는 칸으로. 강릉~서울은 월급 없음, 그 뒤 칸은 출발을 지나 월급</li>
+          <li><b>바로 승리</b>: 한 줄(모서리 사이 땅 6곳) 다 가지면 <b>라인 독점</b>, 같은 색 묶음 ${TRIPLE}개 다 가지면 <b>트리플 독점</b>${mode === 'team' ? ' (팀 땅 합쳐서)' : ''}</li>
+          <li>정한 바퀴가 끝나면 총자산(돈+땅+건물)이 많은 쪽이 승. 혼자(한 팀)만 남아도 승</li>
+          ${ai ? '' : '<li>3분 넘게 안 두면 다른 사람이 차례를 넘길 수 있어요</li>'}
+        </ul></details>`;
+
   /* ---------- 오른쪽: 방 만들기·목록 ---------- */
   let pickSet = null, mode = 'solo', rounds = 15, partner = null;
   function paintSide() {
+    document.querySelectorAll('input[name=tvmode]').forEach(r => { r.checked = r.value === tvMode; });
+    const badge = $('#tvPvpBadge'), att = tv.attention ? tv.attention() : 0;
+    if (badge) { badge.hidden = !att; badge.textContent = att || ''; }
+    $('#tvAiSide').hidden = tvMode !== 'ai'; $('#tvside').hidden = tvMode !== 'pvp';
+    if (tvMode === 'ai') paintAiSide(); else paintPvpSide();
+  }
+  function paintAiSide() {
+    const p = $('#tvAiSide'), S = aiData.set, R = aiData.rec, g = aiData.game, on = g && g.status === 'playing';
+    const radio = (name, v, cur2, label, dis) => `<label><input type="radio" name="${name}" value="${v}"${cur2 === v ? ' checked' : ''}${dis ? ' disabled' : ''}><span>${label}</span></label>`;
+    p.innerHTML = `
+      <section class="card ocard" aria-labelledby="taT">
+        <div class="card__head"><h2 class="card__title" id="taT">${icon('cpu', 18)}컴퓨터와 하기</h2>${R.w + R.l + R.d ? `<span class="orec">${R.w}승 ${R.l}패${R.d ? ` ${R.d}무` : ''}</span>` : ''}</div>
+        <div class="seg seg--full" role="radiogroup" aria-label="방식">${radio('aimode', 'solo', S.mode, '개인전')}${radio('aimode', 'team', S.mode, '2:2 (나+컴퓨터)')}</div>
+        ${S.mode === 'solo' ? `<div class="fld"><span class="olabel">컴퓨터 몇 명</span><div class="seg seg--full" role="radiogroup" aria-label="컴퓨터 수">${[1, 2, 3].map(v => radio('aicpus', v, S.cpus, `${v}명`)).join('')}</div></div>` : ''}
+        <div class="fld"><span class="olabel">난이도</span><div class="seg seg--full" role="radiogroup" aria-label="난이도">${radio('ailevel', 'easy', S.level, '쉬움')}${radio('ailevel', 'normal', S.level, '보통')}</div></div>
+        <div class="fld"><span class="olabel">몇 바퀴</span><div class="seg seg--full" role="radiogroup" aria-label="몇 바퀴">${tv.ROUNDS.map(v => radio('airounds', v, S.rounds, `${v}바퀴`)).join('')}</div></div>
+        <p class="ohint">${S.mode === 'team' ? '나 + 컴퓨터 1 vs 컴퓨터 2·3. 같은 팀 땅은 통행료 없음.' : '순서는 랜덤.'} ${S.level === 'easy' ? '쉬움: 대충 사고 대충 지어요.' : '보통: 돈을 남겨 두고, 독점을 노리거나 막아요.'} 이 기기에만 저장돼서 나중에 이어서 할 수 있어요.</p>
+        ${on ? `<p class="ohint">진행 중인 판: ${g.mode === 'team' ? '2:2' : `컴퓨터 ${g.players.length - 1}명`} · ${g.level === 'easy' ? '쉬움' : '보통'} · ${g.rounds}바퀴</p>` : ''}
+        <button class="btn ${on ? 'btn--ghost' : 'btn--accent'}" type="button" id="aiStart">${icon('dice', 18)}${on ? (aiArmed ? '지금 판을 지우고 새로 시작할까요?' : '새로 시작') : '시작하기'}</button>
+      </section>
+      ${rulesHtml(S.mode, true)}`;
+    const bind = (name, key, num) => p.querySelectorAll(`input[name=${name}]`).forEach(r => r.onchange = () => { S[key] = num ? +r.value : r.value; aiArmed = false; saveAi(); paintAiSide(); });
+    bind('aimode', 'mode'); bind('aicpus', 'cpus', true); bind('ailevel', 'level'); bind('airounds', 'rounds', true);
+    $('#aiStart').onclick = () => { if (on && !aiArmed) { aiArmed = true; paintAiSide(); return; } aiNew(); };
+  }
+  function paintPvpSide() {
     const p = $('#tvside'), others = team.list().filter(m => m.id !== me);
     if (!pickSet) pickSet = new Set(others.map(m => m.id).slice(0, 3));
     [...pickSet].forEach(id => { if (!others.some(m => m.id === id)) pickSet.delete(id); });
@@ -506,7 +699,7 @@ window.Hub.boot(function () {
     const row = (g, extra) => {
       const st = g.state, kind = g.mode === 'team' ? '2:2' : `${(g.players.length || g.joined.length)}명`;
       const s = g.status === 'lobby' ? `대기실 · ${g.joined.length}명 들어옴` : g.status === 'playing' ? (tv.myTurn(g) ? '<b class="o-turn">내 차례</b>' : `${esc(nm(g.turn))} 님 차례`) + (st ? ` · ${Math.min(g.rounds, Math.min(...active(st, g).map(x => st.tc[x])) + 1)}바퀴째` : '') : g.status === 'done' ? (!g.winners.length ? '무승부' : g.winners.includes(me) ? '<b class="o-turn">승리</b>' : `${esc(g.winners.map(nm).join('·'))} 님 승`) : '';
-      return `<li class="ogame${g.id === cur ? ' is-cur' : ''}"><button type="button" class="ogame__btn" data-open="${g.id}">${H.avatar(g.host)}<span class="ogame__txt"><b>${esc(nm(g.host))} 님의 방 · ${kind} · ${g.rounds}바퀴</b><small>${s}</small></span></button>${extra || ''}</li>`;
+      return `<li class="ogame${g.id === cur ? ' is-cur' : ''}"><button type="button" class="ogame__btn" data-open="${g.id}">${av(g.host)}<span class="ogame__txt"><b>${esc(nm(g.host))} 님의 방 · ${kind} · ${g.rounds}바퀴</b><small>${s}</small></span></button>${extra || ''}</li>`;
     };
     const need = mode === 'team' ? 3 : '1~3';
     p.innerHTML = `
@@ -520,7 +713,7 @@ window.Hub.boot(function () {
             <label><input type="radio" name="tmode" value="team"${mode === 'team' ? ' checked' : ''}${others.length < 3 ? ' disabled' : ''}><span>2:2 팀전</span></label>
           </div>
           <div class="fld"><span class="olabel">같이 할 사람 (${need}명)</span><div class="opp" role="group" aria-label="같이 할 사람">
-            ${others.map(m => `<label class="opp__m"><input type="checkbox" name="tinv" value="${m.id}"${pickSet.has(m.id) ? ' checked' : ''}>${H.avatar(m.id)}<span>${esc(m.name)}</span>${team.status(m.id) !== 'offline' ? '<i class="opp__on" title="접속 중"></i>' : ''}</label>`).join('')}
+            ${others.map(m => `<label class="opp__m"><input type="checkbox" name="tinv" value="${m.id}"${pickSet.has(m.id) ? ' checked' : ''}>${av(m.id)}<span>${esc(m.name)}</span>${team.status(m.id) !== 'offline' ? '<i class="opp__on" title="접속 중"></i>' : ''}</label>`).join('')}
           </div></div>
           ${mode === 'team' ? `<div class="fld"><span class="olabel">우리 팀 (나 + 1명)</span><div class="seg seg--full" role="radiogroup" aria-label="같은 팀">
             ${[...pickSet].map(id => `<label><input type="radio" name="tpart" value="${id}"${partner === id ? ' checked' : ''}><span>${esc(H.shortName(nm(id)))}</span></label>`).join('') || '<span class="ohint">먼저 같이 할 사람을 골라요</span>'}
@@ -535,21 +728,7 @@ window.Hub.boot(function () {
       ${mine.length ? `<section class="card ocard" aria-labelledby="tmT"><h2 class="card__title" id="tmT">${icon('map', 18)}내 게임</h2><ul class="ogames">${mine.map(g => row(g)).join('')}</ul></section>` : ''}
       ${watch.length ? `<section class="card ocard" aria-labelledby="twT"><h2 class="card__title" id="twT">${icon('users', 18)}다른 멤버 게임 · 관전</h2><ul class="ogames">${watch.map(g => row(g)).join('')}</ul></section>` : ''}
       ${past.length ? `<section class="card ocard" aria-labelledby="tpT"><h2 class="card__title" id="tpT">${icon('trophy', 18)}지난 게임</h2><ul class="ogames">${past.map(g => row(g)).join('')}</ul></section>` : ''}
-      <details class="card ocard tvrules"><summary class="card__title">${icon('doc', 18)}규칙</summary>
-        <ul class="bprules">
-          <li>시작 돈 ${won(START_CASH)} · 출발을 지나면 월급 ${won(SALARY)}</li>
-          <li>빈 땅에 서면 살 수 있어요(땅만 / 땅+별장). 내 땅에 다시 서면 건물 한 단계 올리기: 별장 → 빌딩 → 호텔</li>
-          <li>남의 땅에 서면 통행료. 같은 색 땅을 다 가지면 2배${mode === 'team' ? ' · 같은 팀 땅은 통행료 없고 내 돈으로 건물도 올려 줄 수 있어요' : ''}</li>
-          <li>통행료를 낸 뒤 그 땅을 1.5배 값에 <b>인수</b>할 수 있어요(호텔은 불가)${mode === 'team' ? ' · 상대 팀 땅만' : ''}</li>
-          <li>돈이 모자라면 팔 땅을 직접 골라요(땅+건물 반값, '자동으로 팔기'도 있음). 다 팔아도 모자라면 파산. 내 차례엔 언제든 땅 팔기 가능</li>
-          <li>주사위 <b>더블이면 한 번 더</b>, 더블 2번 연속이면 무인도로(움직이지 않고 바로)</li>
-          <li>찬스 12장 · 무인도 2번 쉬기(더블이면 탈출, ${won(ESCAPE)} 내면 바로 탈출)</li>
-          <li><b>여행세</b> ${won(TILES.find(t => t.k === 'tax').p)}은 <b>휴게소 금고</b>에 모이고, 휴게소에 도착한 사람이 모인 돈을 다 받아요</li>
-          <li><b>우주여행</b>: 다음 차례에 원하는 칸으로. 강릉~서울은 월급 없음, 그 뒤 칸은 출발을 지나 월급</li>
-          <li><b>바로 승리</b>: 한 줄(모서리 사이 땅 6곳) 다 가지면 <b>라인 독점</b>, 같은 색 묶음 ${TRIPLE}개 다 가지면 <b>트리플 독점</b>${mode === 'team' ? ' (팀 땅 합쳐서)' : ''}</li>
-          <li>정한 바퀴가 끝나면 총자산(돈+땅+건물)이 많은 쪽이 승. 혼자(한 팀)만 남아도 승</li>
-          <li>3분 넘게 안 두면 다른 사람이 차례를 넘길 수 있어요</li>
-        </ul></details>`;
+      ${rulesHtml(mode)}`;
     p.querySelectorAll('input[name=tmode]').forEach(r => r.onchange = () => { mode = r.value; if (mode === 'team') { const keep = [...pickSet].slice(0, 3); others.forEach(m => { if (keep.length < 3 && !keep.includes(m.id)) keep.push(m.id); }); pickSet = new Set(keep); } paintSide(); });
     p.querySelectorAll('input[name=tinv]').forEach(c => c.onchange = () => {
       if (c.checked) pickSet.add(c.value); else pickSet.delete(c.value);
@@ -566,19 +745,20 @@ window.Hub.boot(function () {
     const il = $('#tInviteLink'); if (il) il.onclick = () => H.openInvite();
   }
 
-  function open(id) { cur = id; info = null; anim = null; sellMode = false; pick = null; history.replaceState(null, '', 'travel.html' + (id ? '?g=' + encodeURIComponent(id) : '')); render(); }
+  function open(id) { if (id && tvMode !== 'pvp') setMode('pvp'); cur = id; info = null; anim = null; sellMode = false; pick = null; history.replaceState(null, '', 'travel.html' + (id ? '?g=' + encodeURIComponent(id) : '')); render(); }
 
   function paintOver(g) {
     const over = $('#tvover');
+    if (!g && tvMode === 'ai') { over.hidden = false; over.innerHTML = `<div class="oover__box"><span class="oover__ic">${icon('cpu', 30)}</span><b>컴퓨터와 한 판?</b><span>오른쪽에서 방식·컴퓨터 수·난이도를 고르고<br>시작해요</span><button class="btn btn--accent btn--sm" type="button" data-ai-new>바로 시작</button></div>`; return; }
     if (!g) { over.hidden = false; over.innerHTML = `<div class="oover__box"><span class="oover__ic">${icon('map', 30)}</span><b>전국 일주 한 판?</b><span>오른쪽에서 개인전·2:2 팀전과 바퀴 수를 골라<br>방을 만들어요</span></div>`; return; }
-    const isP = tv.isPlayer(g);
+    const isP = g.local || tv.isPlayer(g);
     if (g.status === 'lobby') {
       const n = g.joined.length, team2 = g.mode === 'team', ready = team2 ? n === 4 : n >= 2;
-      const who = [g.host].concat(g.invited).map(id => `<li class="${g.joined.includes(id) ? 'is-in' : ''}">${H.avatar(id)}<span>${esc(H.shortName(nm(id)))}</span>${team2 ? `<small>${id === g.host || id === g.partner ? 'A' : 'B'}</small>` : ''}</li>`).join('');
+      const who = [g.host].concat(g.invited).map(id => `<li class="${g.joined.includes(id) ? 'is-in' : ''}">${av(id)}<span>${esc(H.shortName(nm(id)))}</span>${team2 ? `<small>${id === g.host || id === g.partner ? 'A' : 'B'}</small>` : ''}</li>`).join('');
       over.hidden = false;
       over.innerHTML = g.host === me
         ? `<div class="oover__box"><b>대기실 · ${n}/${g.invited.length + 1}명</b><ul class="tvwho">${who}</ul><span>${team2 ? '4명이 다 들어오면 시작할 수 있어요' : '안 들어온 사람은 빼고 시작해요'}</span><span class="oover__btns"><button class="btn btn--ghost btn--sm" type="button" data-leave="${g.id}">방 닫기</button><button class="btn btn--accent btn--sm" type="button" data-start="${g.id}"${ready ? '' : ' disabled'}>시작</button></span></div>`
-        : tv.pendingFor(g) ? `<div class="oover__box">${H.avatar(g.host, 'av--lg')}<b>${esc(nm(g.host))} 님이 전국 일주에 불렀어요</b><span>${team2 ? `2:2 팀전 · 나는 ${g.partner === me ? `${esc(H.shortName(nm(g.host)))} 님과 같은 팀` : '상대 팀'}` : '개인전'} · ${g.rounds}바퀴</span><ul class="tvwho">${who}</ul><span class="oover__btns"><button class="btn btn--ghost btn--sm" type="button" data-leave="${g.id}">거절</button><button class="btn btn--accent btn--sm" type="button" data-join="${g.id}">참가</button></span></div>`
+        : tv.pendingFor(g) ? `<div class="oover__box">${av(g.host, 'av--lg')}<b>${esc(nm(g.host))} 님이 전국 일주에 불렀어요</b><span>${team2 ? `2:2 팀전 · 나는 ${g.partner === me ? `${esc(H.shortName(nm(g.host)))} 님과 같은 팀` : '상대 팀'}` : '개인전'} · ${g.rounds}바퀴</span><ul class="tvwho">${who}</ul><span class="oover__btns"><button class="btn btn--ghost btn--sm" type="button" data-leave="${g.id}">거절</button><button class="btn btn--accent btn--sm" type="button" data-join="${g.id}">참가</button></span></div>`
         : isP ? `<div class="oover__box"><span class="oover__ic oover__ic--wait">${icon('map', 30)}</span><b>방장이 시작하길 기다리는 중</b><ul class="tvwho">${who}</ul><button class="btn btn--ghost btn--sm" type="button" data-leave="${g.id}">나가기</button></div>`
         : `<div class="oover__box"><b>대기 중인 방이에요</b><ul class="tvwho">${who}</ul></div>`;
       return;
@@ -589,9 +769,9 @@ window.Hub.boot(function () {
       const rank = g.players.map((p, s) => ({ p, s, w: isOut(st, g, s) ? -1 : worth(st, s) })).sort((a, b) => b.w - a.w);
       over.hidden = false;
       over.innerHTML = `<div class="oover__box${win ? ' is-win' : ''}"><b>${!g.winners.length ? '무승부!' : win ? (g.mode === 'team' ? '우리 팀 승리! 🎉' : '1등! 🎉') : `${esc(g.winners.map(x => H.shortName(nm(x))).join('·'))} 님 ${g.mode === 'team' ? '팀 ' : ''}승리`}</b>
-        <span>${g.reason === 'resign' ? '상대가 기권했어요' : g.reason === 'last' ? '끝까지 남은 쪽이 이겼어요' : g.reason === 'line' ? `라인 독점!${st.end && st.end.line != null ? ` (${LINE_NAMES[st.end.line]} 줄)` : ''}` : g.reason === 'color' ? `트리플 독점! (색 ${TRIPLE}묶음)` : `${g.rounds}바퀴 끝 · 총자산으로`}</span>
-        <ol class="tvrank">${rank.map((r, k) => `<li style="--c:${seatColor(st, r.s)}">${k + 1}. ${H.avatar(r.p)}<span>${esc(nm(r.p))}${g.mode === 'team' ? ` <small>${teamName(st, r.s)}</small>` : ''}</span><b>${r.w < 0 ? (g.resigned.includes(r.p) ? '기권' : '파산') : won(r.w)}</b></li>`).join('')}</ol>
-        ${g.players.includes(me) ? `<button class="btn btn--accent btn--sm" type="button" data-again="${g.id}">같은 사람들로 한 판 더</button>` : ''}</div>`;
+        <span>${g.reason === 'bankrupt' ? '파산해서 끝났어요' : g.reason === 'resign' ? (g.resigned.includes(me) ? '기권했어요' : '상대가 기권했어요') : g.reason === 'last' ? '끝까지 남은 쪽이 이겼어요' : g.reason === 'line' ? `라인 독점!${st.end && st.end.line != null ? ` (${LINE_NAMES[st.end.line]} 줄)` : ''}` : g.reason === 'color' ? `트리플 독점! (색 ${TRIPLE}묶음)` : `${g.rounds}바퀴 끝 · 총자산으로`}</span>
+        <ol class="tvrank">${rank.map((r, k) => `<li style="--c:${seatColor(st, r.s)}">${k + 1}. ${av(r.p)}<span>${esc(nm(r.p))}${g.mode === 'team' ? ` <small>${teamName(st, r.s)}</small>` : ''}</span><b>${r.w < 0 ? (g.resigned.includes(r.p) ? '기권' : '파산') : won(r.w)}</b></li>`).join('')}</ol>
+        ${g.local ? `<button class="btn btn--accent btn--sm" type="button" data-ai-new>한 판 더</button>` : g.players.includes(me) ? `<button class="btn btn--accent btn--sm" type="button" data-again="${g.id}">같은 사람들로 한 판 더</button>` : ''}</div>`;
       return;
     }
     over.hidden = true;
@@ -599,26 +779,30 @@ window.Hub.boot(function () {
 
   function render() {
     paintSide();
-    const g = cur ? tv.get(cur) : null;
+    const g = getG();
     if (g && g.status === 'playing' && !anim) startAnim(g);
     else if (g && !anim) seenVer[g.id] = g.ver;
     paintPlayers(g); paintBoard(g, anim && anim.id === (g && g.id) ? anim.pos : null); paintCenter(g); paintLog(g); paintOver(g);
     const actions = $('#tvActs');
     if (actions) actions.remove();
     if (g && g.status === 'playing' && g.players.includes(me) && !g.resigned.includes(me)) {
-      $('#tvlog').insertAdjacentHTML('afterend', `<div class="tvacts" id="tvActs"><button class="btn btn--ghost btn--sm" type="button" id="tvResign">${icon('flag', 16)}기권</button></div>`);
+      const ao = autoOn(g);
+      $('#tvlog').insertAdjacentHTML('afterend', `<div class="tvacts" id="tvActs"><button class="btn ${ao ? 'btn--accent' : 'btn--ghost'} btn--sm tvauto" type="button" id="tvAuto" aria-pressed="${ao}" title="잠깐 자리 비울 때 컴퓨터(보통)가 내 차례를 대신 둬요 · 이 화면이 열려 있어야 해요">${icon('cpu', 16)}${ao ? '자동 플레이 끄기' : '자동 플레이'}</button><button class="btn btn--ghost btn--sm" type="button" id="tvResign">${icon('flag', 16)}기권</button></div>`);
+      $('#tvAuto').onclick = () => { setAuto(g, !ao); sellMode = false; pick = null; H.toast(ao ? '자동 플레이를 껐어요' : '자동 플레이 켬 · 이 화면을 열어 두세요'); botKey = null; render(); };
       let armed = false;
       $('#tvResign').onclick = (e) => {
         if (!armed) { armed = true; e.currentTarget.innerHTML = `${icon('flag', 16)}정말 기권할까요?`; e.currentTarget.classList.add('btn--danger'); return; }
+        if (g.local) { aiResign(); H.toast('기권했어요'); return; }
         run(() => tv.resign(g.id), '기권했어요');
       };
     }
     autoSkipResigned(g);
+    botTick();
   }
   // 차례인 사람이 기권했으면 다음 사람 화면이 알아서 넘김
   let autoKey = null;
   function autoSkipResigned(g) {
-    if (!g || g.status !== 'playing' || !g.resigned.includes(g.turn) || busy || anim) return;
+    if (!g || g.local || g.status !== 'playing' || !g.resigned.includes(g.turn) || busy || anim) return;
     const st = g.state || init(g), s = g.players.indexOf(g.turn);
     const t = clone(st); normalize(t, g);
     if (g.players[nextSeat(t, g, s)] !== me || g.resigned.includes(me)) return;
@@ -626,14 +810,22 @@ window.Hub.boot(function () {
     play(g, (st2) => skip(st2, g));
   }
 
+  // 컴퓨터와 / 동기와 탭
+  document.querySelectorAll('input[name=tvmode]').forEach(r => r.onchange = () => {
+    if (!r.checked) return;
+    setMode(r.value); info = null; anim = null; sellMode = false; pick = null; aiArmed = false;
+    history.replaceState(null, '', 'travel.html' + (tvMode === 'pvp' && cur ? '?g=' + encodeURIComponent(cur) : ''));
+    render();
+  });
   // 클릭: 방 열기·참가·거절·시작·한 판 더·칸 정보
   document.addEventListener('click', (e) => {
     const t = e.target.closest('.tvt'); if (t && t.closest('#tvb')) {
-      const i = +t.dataset.i, gg = cur ? tv.get(cur) : null, pm = pickMode(gg);
+      const i = +t.dataset.i, gg = getG(), pm = pickMode(gg);
       if (pm) { if (canPick(gg, pm, i)) { pick = pick === i ? null : i; info = null; paintBoard(gg); paintCenter(gg); } return; }
-      info = info === i ? null : i; const g = cur ? tv.get(cur) : null; if (g) { paintBoard(g, anim ? anim.pos : null); paintCenter(g); } else { paintBoard(null); $('#tvc').innerHTML = `<div class="tvinfo"><b>${esc(TILES[i].n)}</b>${TILES[i].p ? `<span>${won(TILES[i].p)}</span>` : ''}<button class="link-btn" type="button" data-info-close>닫기</button></div>`; } return; }
-    if (e.target.closest('[data-info-close]')) { info = null; const g = cur ? tv.get(cur) : null; if (g) { paintBoard(g); paintCenter(g); } else render(); return; }
-    if (!e.target.closest('#tvside, .tvmain')) return;
+      info = info === i ? null : i; const g = getG(); if (g) { paintBoard(g, anim ? anim.pos : null); paintCenter(g); } else { paintBoard(null); $('#tvc').innerHTML = `<div class="tvinfo"><b>${esc(TILES[i].n)}</b>${TILES[i].p ? `<span>${won(TILES[i].p)}</span>` : ''}<button class="link-btn" type="button" data-info-close>닫기</button></div>`; } return; }
+    if (e.target.closest('[data-info-close]')) { info = null; const g = getG(); if (g) { paintBoard(g); paintCenter(g); } else render(); return; }
+    if (!e.target.closest('#tvside, #tvAiSide, .tvmain')) return;
+    if (e.target.closest('[data-ai-new]')) { aiNew(); return; }
     const o = e.target.closest('[data-open]'); if (o) { open(o.dataset.open); if (window.matchMedia('(max-width: 900px)').matches) $('.tvmain').scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
     const j = e.target.closest('[data-join]'); if (j) { open(j.dataset.join); run(() => tv.join(j.dataset.join), '참가했어요 · 방장이 시작하면 알려 줄게요'); return; }
     const l = e.target.closest('[data-leave]'); if (l) { const g = tv.get(l.dataset.leave); run(() => tv.leave(l.dataset.leave), g && g.host === me ? '방을 닫았어요' : g && g.joined.includes(me) ? '방에서 나왔어요' : '거절했어요'); return; }
@@ -646,16 +838,17 @@ window.Hub.boot(function () {
   });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && info != null) { info = null; render(); } });
   document.addEventListener('hub:tv', () => { if (!anim) render(); else paintSide(); });
-  document.addEventListener('hub:team', () => { if (!anim) { paintSide(); const g = cur ? tv.get(cur) : null; paintPlayers(g); } });
+  document.addEventListener('hub:team', () => { if (!anim) { paintSide(); const g = getG(); paintPlayers(g); } });
   let lastStuck = false;
   document.addEventListener('hub:tick', () => {
-    const g = cur ? tv.get(cur) : null; if (!g || g.status !== 'playing' || anim || busy || info != null || tv.myTurn(g)) return;
+    botTick();
+    const g = getG(); if (!g || g.local || g.status !== 'playing' || anim || busy || info != null || tv.myTurn(g)) return;
     const stuck = g.players.includes(me) && !g.resigned.includes(me) && Date.now() - g.acted > 180000;
     if (stuck !== lastStuck) paintCenter(g);
   });
 
   if (cur && !tv.get(cur)) { cur = null; history.replaceState(null, '', 'travel.html'); }
-  if (!cur) { const mineNow = tv.all().find(g => tv.myTurn(g)) || tv.invitesForMe()[0] || tv.all().find(g => tv.isPlayer(g) && ['lobby', 'playing'].includes(g.status)); if (mineNow) open(mineNow.id); }
+  if (!cur && tvMode === 'pvp') { const mineNow = tv.all().find(g => tv.myTurn(g)) || tv.invitesForMe()[0] || tv.all().find(g => tv.isPlayer(g) && ['lobby', 'playing'].includes(g.status)); if (mineNow) open(mineNow.id); }
   render();
   live('전국 일주');
 });

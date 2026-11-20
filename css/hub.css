@@ -1219,3 +1219,14 @@ button.chip:hover { background: color-mix(in srgb, var(--k) 28%, transparent); }
   .tvinfo { font-size: 12px; gap: 4px; }
   .tvinfo b { font-size: 15px; }
 }
+
+/* 전국 일주 v15: 컴퓨터 상대 · 자동 플레이 */
+.av.av--cpu { background: #3d4452; color: #e6ebf2; border-radius: 30%; }
+.av.av--cpu[data-tone="1"] { background: #46506a; }
+.av.av--cpu[data-tone="2"] { background: #5a4a6a; }
+.av.av--cpu[data-tone="3"] { background: #4a5f55; }
+.tvp__auto { color: var(--accent-hi); font-weight: 700; }
+.tvacts { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.omode label { position: relative; }
+#tvAiSide, #tvside { display: grid; gap: 12px; align-content: start; }
+#tvAiSide[hidden], #tvside[hidden] { display: none; }
